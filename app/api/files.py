@@ -2,14 +2,14 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from app.db import UPLOADS_PATH, get_db
 
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
-router = APIRouter(prefix="/api/courses", tags=["files"])
+router = APIRouter(tags=["资料"])
 
 
 def course_exists(course_id: int, db: sqlite3.Connection) -> bool:
@@ -39,7 +39,12 @@ def search_response(row: sqlite3.Row) -> dict:
     return result
 
 
-@router.get("/{course_id}/files")
+@router.get("/api/courses/{course_id}/files", include_in_schema=False)
+@router.get(
+    "/接口/课程/{course_id}/资料",
+    summary="查看课程资料",
+    operation_id="查看课程资料",
+)
 def list_course_files(
     course_id: int, db: sqlite3.Connection = Depends(get_db)
 ) -> list[dict]:
@@ -56,11 +61,21 @@ def list_course_files(
     return [file_response(row) for row in rows]
 
 
-@router.post("/{course_id}/files", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/api/courses/{course_id}/files",
+    include_in_schema=False,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/接口/课程/{course_id}/资料",
+    status_code=status.HTTP_201_CREATED,
+    summary="上传课程资料",
+    operation_id="上传课程资料",
+)
 async def upload_course_file(
     course_id: int,
-    title: str = Form(...),
-    file: UploadFile = File(...),
+    title: str = Form(..., title="资料标题"),
+    file: UploadFile = File(..., title="资料文件"),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     if not course_exists(course_id, db):
@@ -108,10 +123,15 @@ async def upload_course_file(
     return file_response(row)
 
 
-download_router = APIRouter(prefix="/api/files", tags=["files"])
+download_router = APIRouter(tags=["资料"])
 
 
-@download_router.get("/{file_id}/download")
+@download_router.get("/api/files/{file_id}/download", include_in_schema=False)
+@download_router.get(
+    "/接口/资料/{file_id}/下载",
+    summary="下载资料",
+    operation_id="下载资料",
+)
 def download_file(file_id: int, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute(
         "SELECT filename, original_name FROM files WHERE id = ?", (file_id,)
@@ -125,12 +145,21 @@ def download_file(file_id: int, db: sqlite3.Connection = Depends(get_db)):
     return FileResponse(path, filename=row["original_name"])
 
 
-search_router = APIRouter(prefix="/api", tags=["search"])
+search_router = APIRouter(tags=["搜索"])
 
 
-@search_router.get("/search")
-def search_files(q: str = "", db: sqlite3.Connection = Depends(get_db)) -> list[dict]:
-    keyword = q.strip()
+@search_router.get("/api/search", include_in_schema=False)
+@search_router.get(
+    "/接口/搜索",
+    summary="搜索资料",
+    operation_id="搜索资料",
+)
+def search_files(
+    request: Request,
+    关键词: str = "",
+    db: sqlite3.Connection = Depends(get_db),
+) -> list[dict]:
+    keyword = (关键词 or request.query_params.get("q", "")).strip()
     if not keyword:
         return []
 

@@ -27,7 +27,7 @@ function formatFileSize(size) {
 }
 
 function courseUrl(course) {
-  return `course.html?id=${encodeURIComponent(course.id)}&name=${encodeURIComponent(course.name)}`;
+  return `/课程?编号=${encodeURIComponent(course.id)}&名称=${encodeURIComponent(course.name)}`;
 }
 
 function renderCourses(courses) {
@@ -92,7 +92,7 @@ function renderSearchResults(results) {
     courseLink.textContent = "查看课程";
     const download = document.createElement("a");
     download.className = "download-link";
-    download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+    download.href = `/接口/资料/${encodeURIComponent(file.id)}/下载`;
     download.textContent = "下载";
     download.setAttribute("download", "");
     actions.append(courseLink, download);
@@ -111,7 +111,7 @@ async function loadCourses() {
   showState(courseList, "正在加载课程...");
   courseCount.textContent = "";
   try {
-    const response = await fetch("/api/courses");
+    const response = await fetch("/接口/课程");
     if (!response.ok) throw new Error("课程加载失败");
     renderCourses(await response.json());
   } catch (error) {
@@ -127,7 +127,7 @@ async function searchFiles(query) {
   courseCount.textContent = "";
   setSearchLoading(true);
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const response = await fetch(`/接口/搜索?关键词=${encodeURIComponent(query)}`);
     if (!response.ok) throw new Error("搜索失败");
     renderSearchResults(await response.json());
   } catch (error) {
@@ -161,7 +161,7 @@ function renderFiles(files) {
 
     const download = document.createElement("a");
     download.className = "download-link";
-    download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+    download.href = `/接口/资料/${encodeURIComponent(file.id)}/下载`;
     download.textContent = "下载";
     download.setAttribute("download", "");
 
@@ -173,7 +173,7 @@ function renderFiles(files) {
 async function loadCourseFiles(courseId) {
   showState(fileList, "正在加载资料...");
   try {
-    const response = await fetch(`/api/courses/${encodeURIComponent(courseId)}/files`);
+    const response = await fetch(`/接口/课程/${encodeURIComponent(courseId)}/资料`);
     if (!response.ok) {
       if (response.status === 404) throw new Error("课程不存在");
       throw new Error("资料加载失败");
@@ -199,7 +199,7 @@ async function uploadFile(courseId, event) {
   uploadButton.textContent = "上传中...";
 
   try {
-    const response = await fetch(`/api/courses/${encodeURIComponent(courseId)}/files`, {
+    const response = await fetch(`/接口/课程/${encodeURIComponent(courseId)}/资料`, {
       method: "POST",
       body: new FormData(uploadForm),
     });
@@ -222,7 +222,7 @@ function initHomePage() {
     event.preventDefault();
     const query = searchInput.value.trim();
     if (query) {
-      window.history.replaceState({}, "", `/?q=${encodeURIComponent(query)}`);
+      window.history.replaceState({}, "", `/?关键词=${encodeURIComponent(query)}`);
       searchFiles(query);
     } else {
       window.history.replaceState({}, "", "/");
@@ -230,7 +230,8 @@ function initHomePage() {
     }
   });
 
-  const query = new URLSearchParams(window.location.search).get("q")?.trim();
+  const params = new URLSearchParams(window.location.search);
+  const query = params.get("关键词")?.trim();
   if (query) {
     searchInput.value = query;
     searchFiles(query);
@@ -241,8 +242,8 @@ function initHomePage() {
 
 function initCoursePage() {
   const params = new URLSearchParams(window.location.search);
-  const courseId = params.get("id");
-  const name = params.get("name");
+  const courseId = params.get("编号");
+  const name = params.get("名称");
 
   courseName.textContent = name || "课程资料";
   courseContext.textContent = courseId ? "课程资料共享" : "缺少课程信息";

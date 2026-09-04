@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>课盒子 · 课程资料共享</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/资源/样式.css">
 </head>
 <body>
   <header class="site-header">
@@ -24,7 +24,7 @@
     </section>
     <form id="search-form" class="search-bar" role="search">
       <label class="sr-only" for="search-input">搜索课程或资料</label>
-      <input id="search-input" name="q" type="search" placeholder="搜索课程或资料" autocomplete="off">
+      <input id="search-input" name="关键词" type="search" placeholder="搜索课程或资料" autocomplete="off">
       <button type="submit">搜索</button>
     </form>
     <section aria-labelledby="course-heading">
@@ -32,11 +32,11 @@
         <h2 id="course-heading">全部课程</h2>
         <span id="course-count" class="muted"></span>
       </div>
-      <div id="course-list" class="course-grid" data-courses-endpoint="/api/courses" aria-live="polite">
+      <div id="course-list" class="course-grid" aria-live="polite">
         <p class="state-message">正在加载课程...</p>
       </div>
     </section>
   </main>
-  <script src="/static/app.js"></script>
+  <script src="/资源/脚本.js"></script>
 </body>
 </html>

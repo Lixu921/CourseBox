@@ -51,7 +51,9 @@ py -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.tx
 py -m uvicorn app.main:app --port 8000
 ```
 
-浏览器打开 <http://127.0.0.1:8000/>，API 文档位于 <http://127.0.0.1:8000/docs>。
+浏览器打开 <http://127.0.0.1:8000/>，接口文档位于 <http://127.0.0.1:8000/接口文档>。
+
+网页和接口统一使用中文路径：课程页为 `/课程`，样式和脚本为 `/资源/样式.css`、`/资源/脚本.js`，课程接口为 `/接口/课程`，资料接口为 `/接口/课程/{编号}/资料`，下载地址为 `/接口/资料/{资料编号}/下载`，搜索接口为 `/接口/搜索?关键词=...`。
 
 数据库默认保存为 `data/coursebox.db`，也可以通过 `COURSEBOX_DB` 环境变量指定其他 SQLite 文件路径。
 
