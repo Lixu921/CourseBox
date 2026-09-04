@@ -15,6 +15,17 @@ def test_health_check():
     assert response.json()["app"] == "CourseBox"
 
 
+def test_pages_are_available():
+    homepage = client.get("/")
+    course_page = client.get("/course.html")
+
+    assert homepage.status_code == 200
+    assert "全部课程" in homepage.text
+    assert 'id="search-form"' in homepage.text
+    assert course_page.status_code == 200
+    assert 'id="upload-form"' in course_page.text
+
+
 def test_create_and_list_courses(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
 
@@ -98,3 +109,15 @@ def test_download_and_search_file(tmp_path, monkeypatch):
     assert "数据结构.pdf" in unquote(download.headers["content-disposition"])
     assert search.status_code == 200
     assert search.json()[0]["course"]["name"] == "数据结构"
+
+
+def test_search_empty_query_returns_empty_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    response = client.get("/api/search", params={"q": "   "})
+
+    assert response.status_code == 200
+    assert response.json() == []

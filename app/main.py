@@ -22,6 +22,11 @@ def homepage():
     return FileResponse(STATIC_PATH / "index.html")
 
 
+@app.get("/course.html", include_in_schema=False)
+def course_page():
+    return FileResponse(STATIC_PATH / "course.html")
+
+
 @app.get("/api/health")
 def health_check():
     return {"app": "CourseBox", "status": "ok", "docs": "/docs"}

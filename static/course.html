@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>课程资料 · 课盒子</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/">课盒子</a>
+      <span class="header-note">课程资料共享</span>
+      <nav class="top-nav" aria-label="页面导航">
+        <a href="/">首页</a>
+      </nav>
+    </div>
+  </header>
+  <main class="shell page-content course-page">
+    <a class="back-link" href="/">← 返回课程列表</a>
+    <section class="page-intro course-intro">
+      <p class="eyebrow">COURSE MATERIALS</p>
+      <h1 id="course-name">正在加载课程...</h1>
+      <p id="course-context" class="intro-copy">课程资料共享</p>
+    </section>
+
+    <div class="course-layout">
+      <section class="upload-panel" aria-labelledby="upload-heading">
+        <div class="section-heading">
+          <h2 id="upload-heading">上传资料</h2>
+        </div>
+        <form id="upload-form">
+          <div class="form-field">
+            <label for="file-title">资料标题</label>
+            <input id="file-title" name="title" type="text" maxlength="200" placeholder="例如：第三章课件" required>
+          </div>
+          <div class="form-field">
+            <label for="file-input">选择文件</label>
+            <input id="file-input" name="file" type="file" required>
+          </div>
+          <button id="upload-button" class="primary-button" type="submit">上传资料</button>
+          <p id="upload-message" class="form-message" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="files-section" aria-labelledby="files-heading">
+        <div class="section-heading">
+          <h2 id="files-heading">资料列表</h2>
+          <span id="file-count" class="muted"></span>
+        </div>
+        <ul id="file-list" class="file-list" aria-live="polite">
+          <li class="state-message">正在加载资料...</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
