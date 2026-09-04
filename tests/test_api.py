@@ -1,5 +1,3 @@
-import os
-
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -40,3 +38,37 @@ def test_course_name_is_required():
     response = client.post("/api/courses", json={"name": ""})
 
     assert response.status_code == 422
+
+
+def test_upload_and_list_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    course = client.post("/api/courses", json={"name": "数据结构"}).json()
+    response = client.post(
+        f"/api/courses/{course['id']}/files",
+        data={"title": "课件"},
+        files={"file": ("lesson.txt", b"hello CourseBox", "text/plain")},
+    )
+
+    assert response.status_code == 201
+    uploaded = response.json()
+    assert uploaded["original_name"] == "lesson.txt"
+    assert uploaded["size"] == len(b"hello CourseBox")
+
+    files_response = client.get(f"/api/courses/{course['id']}/files")
+
+    assert files_response.status_code == 200
+    assert files_response.json()[0]["title"] == "课件"
+
+
+def test_upload_to_missing_course_returns_404():
+    response = client.post(
+        "/api/courses/999999/files",
+        data={"title": "课件"},
+        files={"file": ("lesson.txt", b"hello", "text/plain")},
+    )
+
+    assert response.status_code == 404

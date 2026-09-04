@@ -6,6 +6,7 @@ from typing import Generator
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "coursebox.db"
+UPLOADS_PATH = PROJECT_ROOT / "uploads"
 
 
 def database_path() -> Path:
@@ -17,7 +18,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
     if connection is None:
         path = database_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path)
+        connection = sqlite3.connect(path, check_same_thread=False)
 
     connection.execute("PRAGMA foreign_keys = ON")
     connection.executescript(
@@ -49,7 +50,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     init_db(connection)
@@ -57,4 +58,3 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
         yield connection
     finally:
         connection.close()
-
