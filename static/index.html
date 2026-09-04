@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>课盒子 · 课程资料共享</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/">课盒子</a>
+      <span class="header-note">课程资料共享</span>
+    </div>
+  </header>
+  <main class="shell page-content">
+    <section class="page-intro">
+      <p class="eyebrow">COURSE LIBRARY</p>
+      <h1>找到下一份学习资料</h1>
+      <p class="intro-copy">按课程浏览课件、习题与复习资料。</p>
+    </section>
+    <form id="search-form" class="search-bar" role="search">
+      <label class="sr-only" for="search-input">搜索课程或资料</label>
+      <input id="search-input" name="q" type="search" placeholder="搜索课程或资料" autocomplete="off">
+      <button type="submit">搜索</button>
+    </form>
+    <section aria-labelledby="course-heading">
+      <div class="section-heading">
+        <h2 id="course-heading">全部课程</h2>
+        <span id="course-count" class="muted"></span>
+      </div>
+      <div id="course-list" class="course-grid" data-courses-endpoint="/api/courses" aria-live="polite">
+        <p class="state-message">正在加载课程...</p>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
