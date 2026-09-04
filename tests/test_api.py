@@ -1,3 +1,5 @@
+from urllib.parse import unquote
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -72,3 +74,27 @@ def test_upload_to_missing_course_returns_404():
     )
 
     assert response.status_code == 404
+
+
+def test_download_and_search_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    course = client.post("/api/courses", json={"name": "数据结构"}).json()
+    upload = client.post(
+        f"/api/courses/{course['id']}/files",
+        data={"title": "树与图讲义"},
+        files={"file": ("数据结构.pdf", b"pdf-content", "application/pdf")},
+    )
+    file_id = upload.json()["id"]
+
+    download = client.get(f"/api/files/{file_id}/download")
+    search = client.get("/api/search", params={"q": "数据结构"})
+
+    assert download.status_code == 200
+    assert download.content == b"pdf-content"
+    assert "数据结构.pdf" in unquote(download.headers["content-disposition"])
+    assert search.status_code == 200
+    assert search.json()[0]["course"]["name"] == "数据结构"
