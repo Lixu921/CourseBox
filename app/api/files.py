@@ -40,7 +40,7 @@ def file_response(row: sqlite3.Row) -> dict:
         "size": row["size"],
         "upload_time": row["upload_time"],
     }
-    for key in ("mime_type", "sha256", "status"):
+    for key in ("mime_type", "sha256", "status", "uploaded_by"):
         if key in row.keys():
             result[key] = row[key]
     return result
@@ -111,7 +111,7 @@ def list_course_files(
     rows = db.execute(
         f"""
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status
+               mime_type, sha256, status, uploaded_by
         FROM files AS f WHERE f.course_id = ? AND {visibility}
         ORDER BY id DESC LIMIT ? OFFSET ?
         """,
@@ -241,7 +241,7 @@ async def upload_course_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status
+               mime_type, sha256, status, uploaded_by
         FROM files WHERE id = ?
         """,
         (cursor.lastrowid,),
@@ -282,7 +282,7 @@ def update_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status
+               mime_type, sha256, status, uploaded_by
         FROM files WHERE id = ?
         """,
         (file_id,),
@@ -485,7 +485,7 @@ def review_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status
+               mime_type, sha256, status, uploaded_by
         FROM files WHERE id = ?
         """,
         (file_id,),

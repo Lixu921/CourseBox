@@ -14,9 +14,31 @@
       <nav class="top-nav" aria-label="页面导航">
         <a href="/">首页</a>
       </nav>
+      <div class="auth-area">
+        <span id="auth-status" class="auth-status">未登录</span>
+        <button id="login-toggle" class="text-button" type="button">登录</button>
+        <button id="logout-button" class="text-button" type="button" hidden>退出</button>
+      </div>
     </div>
   </header>
   <main class="shell page-content course-page">
+    <section id="login-panel" class="auth-panel" hidden aria-labelledby="login-heading">
+      <div class="section-heading">
+        <h2 id="login-heading">登录账户</h2>
+      </div>
+      <form id="login-form" class="inline-form">
+        <div class="form-field">
+          <label for="login-username">用户名</label>
+          <input id="login-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-field">
+          <label for="login-password">密码</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="primary-button compact-button" type="submit">登录</button>
+        <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
     <a class="back-link" href="/">← 返回课程列表</a>
     <section class="page-intro course-intro">
       <p class="eyebrow">课程资料</p>
@@ -38,10 +60,14 @@
           <div class="form-field">
             <label for="file-input">选择文件</label>
             <input id="file-input" name="file" type="file" required>
+            <p id="file-selection" class="form-hint">单个文件不超过 20 兆字节。</p>
           </div>
           <button id="upload-button" class="primary-button" type="submit">上传资料</button>
+          <progress id="upload-progress" max="100" value="0" hidden></progress>
+          <p id="upload-progress-label" class="form-hint" hidden>准备上传</p>
           <p id="upload-message" class="form-message" role="status" aria-live="polite"></p>
         </form>
+        <p id="upload-access-note" class="form-hint" hidden></p>
       </section>
 
       <section class="files-section" aria-labelledby="files-heading">

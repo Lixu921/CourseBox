@@ -45,6 +45,10 @@ def test_pages_are_available():
     assert 'id="upload-form"' in course_page.text
     assert chinese_script.status_code == 200
     assert chinese_style.status_code == 200
+    assert 'id="login-form"' in homepage.text
+    assert 'id="admin-course-panel"' in homepage.text
+    assert 'id="upload-progress"' in course_page.text
+    assert 'id="file-selection"' in course_page.text
 
 
 def test_create_and_list_courses(tmp_path, monkeypatch):

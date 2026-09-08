@@ -14,6 +14,28 @@ const courseActions = document.querySelector("#course-actions");
 const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
 const uploadMessage = document.querySelector("#upload-message");
+const uploadAccessNote = document.querySelector("#upload-access-note");
+const fileInput = document.querySelector("#file-input");
+const fileSelection = document.querySelector("#file-selection");
+const uploadProgress = document.querySelector("#upload-progress");
+const uploadProgressLabel = document.querySelector("#upload-progress-label");
+const authStatus = document.querySelector("#auth-status");
+const loginToggle = document.querySelector("#login-toggle");
+const logoutButton = document.querySelector("#logout-button");
+const loginPanel = document.querySelector("#login-panel");
+const loginForm = document.querySelector("#login-form");
+const loginMessage = document.querySelector("#login-message");
+const adminCoursePanel = document.querySelector("#admin-course-panel");
+const courseCreateForm = document.querySelector("#course-create-form");
+const courseCreateMessage = document.querySelector("#course-create-message");
+
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
+const STATUS_LABELS = { approved: "已通过", pending: "待审核", rejected: "已拒绝" };
+let currentUser = null;
+let currentCourse = null;
+let currentCourseId = null;
+let currentFilePage = 1;
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -29,8 +51,15 @@ function formatFileSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} 兆字节`;
 }
 
+function formatUploadTime(value) {
+  if (!value) return "上传时间未知";
+  const date = new Date(`${value.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
+}
+
 function courseUrl(course) {
-  return `/课程?编号=${encodeURIComponent(course.id)}&名称=${encodeURIComponent(course.name)}`;
+  return `/课程?编号=${encodeURIComponent(course.id)}`;
 }
 
 function renderPagination(container, data, onPage) {
@@ -41,14 +70,82 @@ function renderPagination(container, data, onPage) {
   previous.textContent = "上一页";
   previous.disabled = data.page <= 1;
   previous.addEventListener("click", () => onPage(data.page - 1));
-  const status = document.createElement("span");
-  status.textContent = `${data.page} / ${data.total_pages}`;
+  const pageStatus = document.createElement("span");
+  pageStatus.textContent = `${data.page} / ${data.total_pages}`;
   const next = document.createElement("button");
   next.type = "button";
   next.textContent = "下一页";
   next.disabled = data.page >= data.total_pages;
   next.addEventListener("click", () => onPage(data.page + 1));
-  container.append(previous, status, next);
+  container.append(previous, pageStatus, next);
+}
+
+function updateAuthUI() {
+  if (!authStatus) return;
+  authStatus.textContent = currentUser
+    ? `${currentUser.username} · ${ROLE_LABELS[currentUser.role] || currentUser.role}`
+    : "未登录";
+  loginToggle.hidden = Boolean(currentUser);
+  logoutButton.hidden = !currentUser;
+  if (loginPanel && currentUser) loginPanel.hidden = true;
+  if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
+  updateUploadAccess();
+  if (currentCourse) renderCourseActions(currentCourse);
+}
+
+async function loadCurrentUser() {
+  try {
+    const response = await fetch("/接口/当前用户");
+    currentUser = response.ok ? await response.json() : null;
+  } catch (error) {
+    currentUser = null;
+  }
+  updateAuthUI();
+}
+
+function toggleLoginPanel() {
+  if (!loginPanel) return;
+  loginPanel.hidden = !loginPanel.hidden;
+  if (!loginPanel.hidden) document.querySelector("#login-username")?.focus();
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  loginMessage.textContent = "正在登录...";
+  loginMessage.className = "form-message";
+  const submitButton = loginForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  try {
+    const response = await fetch("/接口/登录", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(loginForm))),
+    });
+    if (!response.ok) throw new Error(await readError(response, "登录失败，请检查账户信息。"));
+    currentUser = await response.json();
+    loginForm.reset();
+    loginMessage.textContent = "登录成功。";
+    loginMessage.className = "form-message success-message";
+    updateAuthUI();
+    if (currentCourseId) await loadCourseFiles(currentCourseId, currentFilePage);
+  } catch (error) {
+    loginMessage.textContent = error.message || "登录失败，请稍后重试。";
+    loginMessage.className = "form-message error-message";
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
+async function logout() {
+  logoutButton.disabled = true;
+  try {
+    await fetch("/接口/退出", { method: "POST" });
+  } finally {
+    currentUser = null;
+    updateAuthUI();
+    if (currentCourseId) await loadCourseFiles(currentCourseId, currentFilePage);
+    logoutButton.disabled = false;
+  }
 }
 
 function renderCourses(data) {
@@ -61,7 +158,6 @@ function renderCourses(data) {
     renderPagination(coursePagination, null, () => {});
     return;
   }
-
   courses.forEach((course) => {
     const card = document.createElement("a");
     card.className = "course-card";
@@ -96,11 +192,9 @@ function renderSearchResults(data) {
     renderPagination(coursePagination, null, () => {});
     return;
   }
-
   results.forEach((file) => {
     const card = document.createElement("article");
     card.className = "search-result-card";
-
     const title = document.createElement("h3");
     title.textContent = file.title;
     const metadata = document.createElement("p");
@@ -109,7 +203,6 @@ function renderSearchResults(data) {
     const course = document.createElement("p");
     course.className = "result-course";
     course.textContent = `所属课程：${file.course.name}`;
-
     const actions = document.createElement("div");
     actions.className = "result-actions";
     const courseLink = document.createElement("a");
@@ -122,7 +215,6 @@ function renderSearchResults(data) {
     download.textContent = "下载";
     download.setAttribute("download", "");
     actions.append(courseLink, download);
-
     card.append(title, metadata, course, actions);
     courseList.append(card);
   });
@@ -167,6 +259,27 @@ async function searchFiles(query, page = 1) {
   }
 }
 
+function updateUploadAccess() {
+  if (!uploadForm) return;
+  const canUpload = currentUser && ["admin", "uploader"].includes(currentUser.role);
+  uploadForm.hidden = !canUpload;
+  uploadAccessNote.hidden = canUpload;
+  if (!canUpload) {
+    uploadAccessNote.textContent = currentUser ? "当前账户只有浏览权限。" : "登录后可以上传课程资料。";
+  }
+}
+
+function statusBadge(status) {
+  const badge = document.createElement("span");
+  badge.className = `status-badge status-${status || "unknown"}`;
+  badge.textContent = STATUS_LABELS[status] || "状态未知";
+  return badge;
+}
+
+function canManageFile(file) {
+  return currentUser?.role === "admin" || currentUser?.id === file.uploaded_by;
+}
+
 function renderFiles(data, courseId) {
   const files = data.items || [];
   fileList.innerHTML = "";
@@ -176,39 +289,57 @@ function renderFiles(data, courseId) {
     renderPagination(filePagination, null, () => {});
     return;
   }
-
   files.forEach((file) => {
     const item = document.createElement("li");
     item.className = "file-row";
-
     const details = document.createElement("div");
     details.className = "file-details";
+    const titleLine = document.createElement("div");
+    titleLine.className = "file-title-line";
     const title = document.createElement("h3");
     title.textContent = file.title;
+    titleLine.append(title, statusBadge(file.status));
     const metadata = document.createElement("p");
     metadata.className = "file-meta";
-    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)}`;
-    details.append(title, metadata);
-
+    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatUploadTime(file.upload_time)}`;
+    const technical = document.createElement("p");
+    technical.className = "file-meta file-technical";
+    technical.textContent = `${file.mime_type || "未知类型"}${file.sha256 ? ` · SHA-256 ${file.sha256.slice(0, 12)}…` : ""}`;
+    details.append(titleLine, metadata, technical);
     const download = document.createElement("a");
     download.className = "download-link";
     download.href = `/接口/资料/${encodeURIComponent(file.id)}/下载`;
     download.textContent = "下载";
     download.setAttribute("download", "");
-
     const actions = document.createElement("div");
     actions.className = "file-actions";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "text-button";
-    edit.textContent = "编辑";
-    edit.addEventListener("click", () => editFile(file, courseId));
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "text-button danger-button";
-    remove.textContent = "删除";
-    remove.addEventListener("click", () => removeFile(file, courseId));
-    actions.append(edit, remove, download);
+    if (canManageFile(file)) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "text-button";
+      edit.textContent = "编辑";
+      edit.addEventListener("click", () => editFile(file, courseId));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "text-button danger-button";
+      remove.textContent = "删除";
+      remove.addEventListener("click", () => removeFile(file, courseId));
+      actions.append(edit, remove);
+    }
+    if (currentUser?.role === "admin" && file.status !== "approved") {
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.className = "text-button review-button";
+      approve.textContent = "通过";
+      approve.addEventListener("click", () => reviewFile(file, courseId, "approved"));
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.className = "text-button danger-button";
+      reject.textContent = "拒绝";
+      reject.addEventListener("click", () => reviewFile(file, courseId, "rejected"));
+      actions.append(approve, reject);
+    }
+    actions.append(download);
     item.append(details, actions);
     fileList.append(item);
   });
@@ -216,6 +347,7 @@ function renderFiles(data, courseId) {
 }
 
 async function loadCourseFiles(courseId, page = 1) {
+  currentFilePage = page;
   showState(fileList, "正在加载资料...");
   filePagination.innerHTML = "";
   try {
@@ -243,7 +375,7 @@ async function editFile(file, courseId) {
     window.alert(await readError(response, "资料更新失败。"));
     return;
   }
-  await loadCourseFiles(courseId);
+  await loadCourseFiles(courseId, currentFilePage);
 }
 
 async function removeFile(file, courseId) {
@@ -253,12 +385,30 @@ async function removeFile(file, courseId) {
     window.alert(await readError(response, "资料删除失败。"));
     return;
   }
-  await loadCourseFiles(courseId);
+  await loadCourseFiles(courseId, currentFilePage);
+}
+
+async function reviewFile(file, courseId, status) {
+  const action = status === "approved" ? "通过" : "拒绝";
+  if (!window.confirm(`确定${action}“${file.title}”吗？`)) return;
+  const response = await fetch(`/接口/资料/${encodeURIComponent(file.id)}/审核`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "资料审核失败。"));
+    return;
+  }
+  await loadCourseFiles(courseId, currentFilePage);
+  await refreshCourse();
 }
 
 function renderCourseActions(course) {
-  courseActions.hidden = false;
+  if (!courseActions) return;
+  courseActions.hidden = currentUser?.role !== "admin";
   courseActions.innerHTML = "";
+  if (courseActions.hidden) return;
   const edit = document.createElement("button");
   edit.type = "button";
   edit.className = "text-button";
@@ -284,12 +434,10 @@ async function editCourse(course) {
     window.alert(await readError(response, "课程更新失败。"));
     return;
   }
-  const updated = await response.json();
-  courseName.textContent = updated.name;
-  const params = new URLSearchParams(window.location.search);
-  params.set("名称", updated.name);
-  window.history.replaceState({}, "", `/课程?${params}`);
-  renderCourseActions(updated);
+  currentCourse = await response.json();
+  courseName.textContent = currentCourse.name;
+  courseContext.textContent = courseContextText(currentCourse);
+  renderCourseActions(currentCourse);
 }
 
 async function removeCourse(course) {
@@ -302,36 +450,160 @@ async function removeCourse(course) {
   window.location.href = "/";
 }
 
+function courseContextText(course) {
+  const context = [course.college, course.semester].filter(Boolean).join(" · ");
+  return `${context ? `${context} · ` : ""}${course.file_count} 份已通过资料`;
+}
+
+async function refreshCourse() {
+  if (!currentCourseId) return;
+  const response = await fetch(`/接口/课程/${encodeURIComponent(currentCourseId)}`);
+  if (!response.ok) return;
+  currentCourse = await response.json();
+  courseName.textContent = currentCourse.name;
+  courseContext.textContent = courseContextText(currentCourse);
+  renderCourseActions(currentCourse);
+}
+
+function updateFileSelection() {
+  const file = fileInput.files[0];
+  if (!file) {
+    fileSelection.textContent = "单个文件不超过 20 兆字节。";
+    fileSelection.className = "form-hint";
+    return;
+  }
+  fileSelection.textContent = `${file.name} · ${formatFileSize(file.size)}`;
+  fileSelection.className = file.size > MAX_FILE_SIZE ? "form-hint error-message" : "form-hint";
+}
+
+function setUploadProgress(value, label) {
+  uploadProgress.hidden = false;
+  uploadProgress.value = value;
+  uploadProgressLabel.hidden = false;
+  uploadProgressLabel.textContent = label;
+}
+
+function resetUploadProgress() {
+  uploadProgress.hidden = true;
+  uploadProgress.value = 0;
+  uploadProgressLabel.hidden = true;
+}
+
+function finishUpload(hideProgress = true) {
+  uploadButton.disabled = false;
+  uploadButton.textContent = "上传资料";
+  if (hideProgress) window.setTimeout(resetUploadProgress, 800);
+}
+
+function uploadFile(courseId, event) {
+  event.preventDefault();
+  uploadMessage.textContent = "";
+  uploadMessage.className = "form-message";
+  const selectedFile = fileInput.files[0];
+  const title = document.querySelector("#file-title").value.trim();
+  if (!title) {
+    uploadMessage.textContent = "资料标题不能为空。";
+    uploadMessage.className = "form-message error-message";
+    return;
+  }
+  if (!selectedFile) {
+    uploadMessage.textContent = "请选择要上传的文件。";
+    uploadMessage.className = "form-message error-message";
+    return;
+  }
+  if (selectedFile.size > MAX_FILE_SIZE) {
+    uploadMessage.textContent = "文件不能超过 20 兆字节。";
+    uploadMessage.className = "form-message error-message";
+    return;
+  }
+  uploadButton.disabled = true;
+  uploadButton.textContent = "上传中...";
+  setUploadProgress(0, "准备上传");
+  const request = new XMLHttpRequest();
+  request.open("POST", `/接口/课程/${encodeURIComponent(courseId)}/资料`);
+  request.upload.addEventListener("progress", (progressEvent) => {
+    if (!progressEvent.lengthComputable) return;
+    const value = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+    setUploadProgress(value, `已上传 ${value}%`);
+  });
+  request.addEventListener("load", async () => {
+    let body = {};
+    try {
+      body = JSON.parse(request.responseText);
+    } catch (error) {
+      body = {};
+    }
+    if (request.status < 200 || request.status >= 300) {
+      uploadMessage.textContent = body.detail || "上传失败，请稍后重试。";
+      uploadMessage.className = "form-message error-message";
+      finishUpload();
+      return;
+    }
+    uploadForm.reset();
+    updateFileSelection();
+    setUploadProgress(100, "上传完成");
+    uploadMessage.textContent = currentUser?.role === "admin"
+      ? "上传成功，资料已发布。"
+      : "上传成功，资料正在等待管理员审核。";
+    uploadMessage.className = "form-message success-message";
+    await loadCourseFiles(courseId, 1);
+    await refreshCourse();
+    finishUpload(false);
+  });
+  request.addEventListener("error", () => {
+    uploadMessage.textContent = "网络异常，上传失败，请稍后重试。";
+    uploadMessage.className = "form-message error-message";
+    finishUpload();
+  });
+  request.addEventListener("abort", () => {
+    uploadMessage.textContent = "上传已取消。";
+    uploadMessage.className = "form-message error-message";
+    finishUpload();
+  });
+  request.addEventListener("timeout", () => {
+    uploadMessage.textContent = "上传超时，请稍后重试。";
+    uploadMessage.className = "form-message error-message";
+    finishUpload();
+  });
+  request.timeout = 120000;
+  request.send(new FormData(uploadForm));
+}
+
+async function createCourse(event) {
+  event.preventDefault();
+  courseCreateMessage.textContent = "正在创建...";
+  courseCreateMessage.className = "form-message";
+  const submitButton = courseCreateForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  try {
+    const response = await fetch("/接口/课程", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(courseCreateForm))),
+    });
+    if (!response.ok) throw new Error(await readError(response, "课程创建失败。"));
+    courseCreateForm.reset();
+    courseCreateMessage.textContent = "课程创建成功。";
+    courseCreateMessage.className = "form-message success-message";
+    await loadCourses(1);
+  } catch (error) {
+    courseCreateMessage.textContent = error.message || "课程创建失败。";
+    courseCreateMessage.className = "form-message error-message";
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
 function readError(response, fallback) {
   return response.json()
     .then((body) => body.detail || fallback)
     .catch(() => fallback);
 }
 
-async function uploadFile(courseId, event) {
-  event.preventDefault();
-  uploadMessage.textContent = "";
-  uploadMessage.className = "form-message";
-  uploadButton.disabled = true;
-  uploadButton.textContent = "上传中...";
-
-  try {
-    const response = await fetch(`/接口/课程/${encodeURIComponent(courseId)}/资料`, {
-      method: "POST",
-      body: new FormData(uploadForm),
-    });
-    if (!response.ok) throw new Error(await readError(response, "上传失败，请稍后重试。"));
-    uploadForm.reset();
-    uploadMessage.textContent = "上传成功，资料列表已更新。";
-    uploadMessage.className = "form-message success-message";
-    await loadCourseFiles(courseId);
-  } catch (error) {
-    uploadMessage.textContent = error.message || "上传失败，请稍后重试。";
-    uploadMessage.className = "form-message error-message";
-  } finally {
-    uploadButton.disabled = false;
-    uploadButton.textContent = "上传资料";
-  }
+function initAuth() {
+  loginToggle?.addEventListener("click", toggleLoginPanel);
+  logoutButton?.addEventListener("click", logout);
+  loginForm?.addEventListener("submit", submitLogin);
 }
 
 function initHomePage() {
@@ -346,7 +618,7 @@ function initHomePage() {
       loadCourses();
     }
   });
-
+  courseCreateForm?.addEventListener("submit", createCourse);
   const params = new URLSearchParams(window.location.search);
   const query = params.get("关键词")?.trim();
   if (query) {
@@ -357,35 +629,38 @@ function initHomePage() {
   }
 }
 
-function initCoursePage() {
+async function initCoursePage() {
   const params = new URLSearchParams(window.location.search);
-  const courseId = params.get("编号");
+  currentCourseId = params.get("编号");
   courseName.textContent = "正在加载课程...";
-  courseContext.textContent = courseId ? "课程资料共享" : "缺少课程信息";
-  if (!courseId || !/^\d+$/.test(courseId)) {
+  courseContext.textContent = currentCourseId ? "课程资料共享" : "缺少课程信息";
+  if (!currentCourseId || !/^\d+$/.test(currentCourseId)) {
     showState(fileList, "无法识别这门课程，请从首页重新进入。", true);
     uploadForm.hidden = true;
     return;
   }
-
-  uploadForm.addEventListener("submit", (event) => uploadFile(courseId, event));
-  fetch(`/接口/课程/${encodeURIComponent(courseId)}`)
-    .then((response) => {
-      if (!response.ok) throw new Error("课程不存在");
-      return response.json();
-    })
-    .then((course) => {
-      courseName.textContent = course.name;
-      courseContext.textContent = `${course.college || ""}${course.college && course.semester ? " · " : ""}${course.semester || ""} · ${course.file_count} 份资料`;
-      renderCourseActions(course);
-      return loadCourseFiles(courseId);
-    })
-    .catch((error) => {
-      courseName.textContent = "课程不存在";
-      courseContext.textContent = error.message;
-      uploadForm.hidden = true;
-    });
+  uploadForm.addEventListener("submit", (event) => uploadFile(currentCourseId, event));
+  fileInput.addEventListener("change", updateFileSelection);
+  try {
+    const response = await fetch(`/接口/课程/${encodeURIComponent(currentCourseId)}`);
+    if (!response.ok) throw new Error("课程不存在");
+    currentCourse = await response.json();
+    courseName.textContent = currentCourse.name;
+    courseContext.textContent = courseContextText(currentCourse);
+    renderCourseActions(currentCourse);
+    await loadCourseFiles(currentCourseId);
+  } catch (error) {
+    courseName.textContent = "课程不存在";
+    courseContext.textContent = error.message;
+    uploadForm.hidden = true;
+  }
 }
 
-if (courseList) initHomePage();
-if (fileList) initCoursePage();
+async function bootstrap() {
+  initAuth();
+  await loadCurrentUser();
+  if (courseList) initHomePage();
+  if (fileList) await initCoursePage();
+}
+
+bootstrap();

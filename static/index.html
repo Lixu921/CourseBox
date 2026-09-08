@@ -14,9 +14,31 @@
       <nav class="top-nav" aria-label="页面导航">
         <a href="/">首页</a>
       </nav>
+      <div class="auth-area">
+        <span id="auth-status" class="auth-status">未登录</span>
+        <button id="login-toggle" class="text-button" type="button">登录</button>
+        <button id="logout-button" class="text-button" type="button" hidden>退出</button>
+      </div>
     </div>
   </header>
   <main class="shell page-content">
+    <section id="login-panel" class="auth-panel" hidden aria-labelledby="login-heading">
+      <div class="section-heading">
+        <h2 id="login-heading">登录账户</h2>
+      </div>
+      <form id="login-form" class="inline-form">
+        <div class="form-field">
+          <label for="login-username">用户名</label>
+          <input id="login-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-field">
+          <label for="login-password">密码</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="primary-button compact-button" type="submit">登录</button>
+        <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
     <section class="page-intro">
       <p class="eyebrow">课程资料库</p>
       <h1>找到下一份学习资料</h1>
@@ -27,6 +49,28 @@
       <input id="search-input" name="关键词" type="search" placeholder="搜索课程或资料" autocomplete="off">
       <button type="submit">搜索</button>
     </form>
+    <section id="admin-course-panel" class="admin-panel" hidden aria-labelledby="admin-course-heading">
+      <div class="section-heading">
+        <h2 id="admin-course-heading">创建课程</h2>
+        <span class="muted">管理员</span>
+      </div>
+      <form id="course-create-form" class="course-create-form">
+        <div class="form-field">
+          <label for="course-create-name">课程名称</label>
+          <input id="course-create-name" name="name" type="text" maxlength="200" required>
+        </div>
+        <div class="form-field">
+          <label for="course-create-college">学院</label>
+          <input id="course-create-college" name="college" type="text" maxlength="120">
+        </div>
+        <div class="form-field">
+          <label for="course-create-semester">学期</label>
+          <input id="course-create-semester" name="semester" type="text" maxlength="80">
+        </div>
+        <button class="primary-button compact-button" type="submit">创建课程</button>
+        <p id="course-create-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
     <section aria-labelledby="course-heading">
       <div class="section-heading">
         <h2 id="course-heading">全部课程</h2>

@@ -28,6 +28,8 @@ a { color: inherit; }
 .top-nav { margin-left: auto; }
 .top-nav a { color: var(--accent-dark); font-size: 14px; text-decoration: none; }
 .top-nav a:hover { text-decoration: underline; }
+.auth-area { align-items: center; display: flex; gap: 10px; margin-left: 18px; }
+.auth-status { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .page-content { padding: 64px 0 80px; }
 .page-intro { max-width: 640px; }
 .eyebrow { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: 1px; margin: 0 0 8px; }
@@ -35,6 +37,13 @@ h1, h2, p { margin-top: 0; }
 h1 { font-size: 44px; line-height: 1.2; margin-bottom: 12px; }
 h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; }
 .intro-copy { color: var(--muted); margin-bottom: 32px; }
+.auth-panel, .admin-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 32px; padding: 22px 24px; }
+.auth-panel .section-heading, .admin-panel .section-heading { margin-bottom: 16px; }
+.inline-form, .course-create-form { align-items: end; display: grid; gap: 14px; grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) auto; }
+.inline-form .form-field, .course-create-form .form-field { margin-bottom: 0; }
+.compact-button { min-width: 112px; width: auto; }
+.inline-form .form-message, .course-create-form .form-message { grid-column: 1 / -1; margin: 0; min-height: 0; }
+.form-hint { color: var(--muted); font-size: 13px; margin: 7px 0 0; }
 .search-bar { display: flex; max-width: 720px; margin-bottom: 56px; }
 .search-bar input { min-width: 0; flex: 1; border: 1px solid #b9c5cc; border-right: 0; border-radius: 6px 0 0 6px; background: var(--surface); color: var(--ink); font: inherit; padding: 13px 16px; }
 .search-bar input:focus { outline: 3px solid var(--accent-soft); border-color: var(--accent); }
@@ -77,7 +86,14 @@ h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; }
 .file-row:first-child { border-top: 1px solid var(--line); }
 .file-details { min-width: 0; }
 .file-details h3 { font-size: 17px; line-height: 1.4; margin: 0 0 4px; overflow-wrap: anywhere; }
+.file-title-line { align-items: center; display: flex; flex-wrap: wrap; gap: 9px; }
+.file-title-line h3 { margin-bottom: 0; }
 .file-meta { color: var(--muted); font-size: 14px; margin: 0; overflow-wrap: anywhere; }
+.file-technical { font-size: 12px; margin-top: 3px; }
+.status-badge { border-radius: 999px; display: inline-block; font-size: 12px; font-weight: 700; line-height: 1.4; padding: 2px 8px; white-space: nowrap; }
+.status-approved { background: #e4f3e8; color: #287246; }
+.status-pending { background: #fff1dc; color: #94601d; }
+.status-rejected { background: #fbe6e1; color: #a04435; }
 .download-link { border: 1px solid var(--accent); border-radius: 5px; color: var(--accent-dark); flex: 0 0 auto; font-size: 14px; font-weight: 700; padding: 7px 13px; text-decoration: none; }
 .download-link:hover { background: var(--accent-soft); }
 .pagination { align-items: center; display: flex; gap: 14px; justify-content: center; margin-top: 28px; min-height: 38px; }
@@ -89,11 +105,14 @@ h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; }
 .file-actions .download-link { margin-left: 3px; }
 .danger-button { color: var(--warning); }
 .danger-button:hover { background: #fbeee5; border-color: var(--warning); }
+progress { accent-color: var(--accent); display: block; height: 8px; margin-top: 16px; width: 100%; }
 .sr-only { height: 1px; margin: -1px; overflow: hidden; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); }
 @media (max-width: 600px) {
   .shell { width: min(100% - 28px, 1120px); }
-  .header-inner { gap: 10px; }
+  .header-inner { flex-wrap: wrap; gap: 10px; padding: 12px 0; }
   .header-note { display: none; }
+  .top-nav { margin-left: auto; }
+  .auth-area { flex-basis: 100%; justify-content: flex-end; margin-left: 0; }
   .page-content { padding-top: 42px; }
   h1 { font-size: 32px; }
   .search-bar { margin-bottom: 40px; }
@@ -104,4 +123,7 @@ h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; }
   .file-row { align-items: flex-start; flex-direction: column; gap: 12px; }
   .file-actions { width: 100%; justify-content: flex-start; }
   .record-actions { margin-top: -10px; }
+  .inline-form, .course-create-form { grid-template-columns: 1fr; }
+  .inline-form .form-message, .course-create-form .form-message { grid-column: auto; }
+  .compact-button { width: 100%; }
 }
