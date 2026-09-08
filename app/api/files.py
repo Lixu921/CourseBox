@@ -1,15 +1,28 @@
 import sqlite3
+import hashlib
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
-from app.db import UPLOADS_PATH, get_db
+from app.config import DEFAULT_MAX_FILE_SIZE, allowed_extensions, max_file_size, uploads_path
+from app.db import get_db
+from app.schemas import FilePage, FileUpdate
 
 
-MAX_FILE_SIZE = 20 * 1024 * 1024
 router = APIRouter(tags=["资料"])
+DANGEROUS_MIME_TYPES = {
+    "application/vnd.microsoft.portable-executable",
+    "application/x-bat",
+    "application/x-csh",
+    "application/x-dosexec",
+    "application/x-executable",
+    "application/x-msdownload",
+    "application/x-powershell",
+    "application/x-sh",
+    "text/x-shellscript",
+}
 
 
 def course_exists(course_id: int, db: sqlite3.Connection) -> bool:
@@ -18,7 +31,7 @@ def course_exists(course_id: int, db: sqlite3.Connection) -> bool:
 
 
 def file_response(row: sqlite3.Row) -> dict:
-    return {
+    result = {
         "id": row["id"],
         "course_id": row["course_id"],
         "title": row["title"],
@@ -26,6 +39,10 @@ def file_response(row: sqlite3.Row) -> dict:
         "size": row["size"],
         "upload_time": row["upload_time"],
     }
+    for key in ("mime_type", "sha256", "status"):
+        if key in row.keys():
+            result[key] = row[key]
+    return result
 
 
 def search_response(row: sqlite3.Row) -> dict:
@@ -39,26 +56,58 @@ def search_response(row: sqlite3.Row) -> dict:
     return result
 
 
+def page_response(items: list, total: int, page: int, page_size: int) -> dict:
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
+
+
+def stored_file_path(filename: str) -> Path | None:
+    root = uploads_path().resolve()
+    path = (root / filename).resolve()
+    return path if root in path.parents else None
+
+
+def fts_query(keyword: str) -> str:
+    return " AND ".join(
+        f'"{part.replace(chr(34), "")}"' for part in keyword.split() if part
+    )
+
+
 @router.get("/api/courses/{course_id}/files", include_in_schema=False)
 @router.get(
     "/接口/课程/{course_id}/资料",
+    response_model=FilePage,
     summary="查看课程资料",
     operation_id="查看课程资料",
 )
 def list_course_files(
-    course_id: int, db: sqlite3.Connection = Depends(get_db)
-) -> list[dict]:
+    course_id: int,
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: sqlite3.Connection = Depends(get_db),
+) -> FilePage:
     if not course_exists(course_id, db):
         raise HTTPException(status_code=404, detail="课程不存在")
 
+    total = db.execute(
+        "SELECT COUNT(*) FROM files WHERE course_id = ?", (course_id,)
+    ).fetchone()[0]
     rows = db.execute(
         """
-        SELECT id, course_id, title, original_name, size, upload_time
-        FROM files WHERE course_id = ? ORDER BY id DESC
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status
+        FROM files WHERE course_id = ? ORDER BY id DESC LIMIT ? OFFSET ?
         """,
-        (course_id,),
+        (course_id, page_size, (page - 1) * page_size),
     ).fetchall()
-    return [file_response(row) for row in rows]
+    return FilePage(
+        **page_response([file_response(row) for row in rows], total, page, page_size)
+    )
 
 
 @router.post(
@@ -78,49 +127,159 @@ async def upload_course_file(
     file: UploadFile = File(..., title="资料文件"),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    if not course_exists(course_id, db):
-        raise HTTPException(status_code=404, detail="课程不存在")
-
-    title = title.strip()
-    if not title:
-        raise HTTPException(status_code=422, detail="资料标题不能为空")
-
-    original_name = Path(file.filename or "未命名文件").name
-    suffix = Path(original_name).suffix
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
-    stored_path = UPLOADS_PATH / stored_name
-    size = 0
-
+    stored_path: Path | None = None
     try:
+        if not course_exists(course_id, db):
+            raise HTTPException(status_code=404, detail="课程不存在")
+
+        title = title.strip()
+        if not title:
+            raise HTTPException(status_code=422, detail="资料标题不能为空")
+
+        if not file.filename or not file.filename.strip():
+            raise HTTPException(status_code=422, detail="文件名不能为空")
+        original_name = Path(file.filename).name
+        suffix = Path(original_name).suffix
+        if len(original_name) > 255:
+            raise HTTPException(status_code=422, detail="文件名不能超过 255 个字符")
+        if suffix.lower() not in allowed_extensions():
+            raise HTTPException(status_code=415, detail="暂不支持该文件类型")
+        content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+        if content_type in DANGEROUS_MIME_TYPES:
+            raise HTTPException(status_code=415, detail="不允许上传可执行文件")
+
+        limit = max_file_size()
+        upload_root = uploads_path().resolve()
+        upload_root.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}{suffix}"
+        stored_path = (upload_root / stored_name).resolve()
+        if upload_root not in stored_path.parents:
+            raise HTTPException(status_code=400, detail="无效的文件路径")
+
+        size = 0
+        digest = hashlib.sha256()
         with stored_path.open("wb") as output:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
-                if size > MAX_FILE_SIZE:
-                    raise HTTPException(status_code=413, detail="文件不能超过 20MB")
+                if size > limit:
+                    detail = (
+                        "文件不能超过 20MB"
+                        if limit == DEFAULT_MAX_FILE_SIZE
+                        else f"文件不能超过 {limit} 字节"
+                    )
+                    raise HTTPException(
+                        status_code=413,
+                        detail=detail,
+                    )
+                digest.update(chunk)
                 output.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=422, detail="文件不能为空")
+
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO files
+                    (course_id, title, filename, original_name, size, mime_type, sha256)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    course_id,
+                    title,
+                    stored_name,
+                    original_name,
+                    size,
+                    content_type or None,
+                    digest.hexdigest(),
+                ),
+            )
+            db.commit()
+        except sqlite3.IntegrityError as error:
+            db.rollback()
+            if "sha256" in str(error).lower():
+                raise HTTPException(status_code=409, detail="该课程已存在相同文件") from error
+            raise
+        except Exception:
+            db.rollback()
+            raise
     except HTTPException:
-        stored_path.unlink(missing_ok=True)
+        if stored_path is not None:
+            stored_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        if stored_path is not None:
+            stored_path.unlink(missing_ok=True)
+        db.rollback()
         raise
     finally:
         await file.close()
 
-    cursor = db.execute(
-        """
-        INSERT INTO files (course_id, title, filename, original_name, size)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (course_id, title, stored_name, original_name, size),
-    )
-    db.commit()
     row = db.execute(
         """
-        SELECT id, course_id, title, original_name, size, upload_time
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status
         FROM files WHERE id = ?
         """,
         (cursor.lastrowid,),
     ).fetchone()
     return file_response(row)
+
+
+@router.patch(
+    "/api/files/{file_id}",
+    include_in_schema=False,
+)
+@router.patch(
+    "/接口/资料/{file_id}",
+    summary="编辑资料标题",
+    operation_id="编辑资料标题",
+)
+def update_file(
+    file_id: int,
+    update: FileUpdate,
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    cursor = db.execute(
+        "UPDATE files SET title = ? WHERE id = ?", (update.title, file_id)
+    )
+    if cursor.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="资料不存在")
+    db.commit()
+    row = db.execute(
+        """
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status
+        FROM files WHERE id = ?
+        """,
+        (file_id,),
+    ).fetchone()
+    return file_response(row)
+
+
+@router.delete(
+    "/api/files/{file_id}",
+    include_in_schema=False,
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@router.delete(
+    "/接口/资料/{file_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除资料",
+    operation_id="删除资料",
+)
+def delete_file(file_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
+    row = db.execute("SELECT filename FROM files WHERE id = ?", (file_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="资料不存在")
+    db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    db.commit()
+    path = stored_file_path(row["filename"])
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 download_router = APIRouter(tags=["资料"])
@@ -134,15 +293,21 @@ download_router = APIRouter(tags=["资料"])
 )
 def download_file(file_id: int, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute(
-        "SELECT filename, original_name FROM files WHERE id = ?", (file_id,)
+        "SELECT filename, original_name, mime_type FROM files WHERE id = ?", (file_id,)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="资料不存在")
 
-    path = UPLOADS_PATH / row["filename"]
+    path = stored_file_path(row["filename"])
+    if path is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(path, filename=row["original_name"])
+    return FileResponse(
+        path,
+        filename=row["original_name"],
+        media_type=row["mime_type"] or "application/octet-stream",
+    )
 
 
 search_router = APIRouter(tags=["搜索"])
@@ -151,30 +316,80 @@ search_router = APIRouter(tags=["搜索"])
 @search_router.get("/api/search", include_in_schema=False)
 @search_router.get(
     "/接口/搜索",
+    response_model=FilePage,
     summary="搜索资料",
     operation_id="搜索资料",
 )
 def search_files(
     request: Request,
     关键词: str = "",
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: sqlite3.Connection = Depends(get_db),
-) -> list[dict]:
+) -> FilePage:
     keyword = (关键词 or request.query_params.get("q", "")).strip()
     if not keyword:
-        return []
+        return FilePage(**page_response([], 0, page, page_size))
 
     pattern = f"%{keyword}%"
-    rows = db.execute(
+    match_query = fts_query(keyword)
+    try:
+        total = db.execute(
+            """
+            SELECT COUNT(*)
+            FROM files_fts AS fts
+            JOIN files AS f ON f.id = fts.rowid
+            JOIN courses AS c ON c.id = f.course_id
+            WHERE fts MATCH ?
+               OR LOWER(f.title) LIKE LOWER(?)
+               OR LOWER(f.original_name) LIKE LOWER(?)
+               OR LOWER(c.name) LIKE LOWER(?)
+            """,
+            (match_query, pattern, pattern, pattern),
+        ).fetchone()[0]
+        rows = db.execute(
+            """
+            SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
+                   f.mime_type, f.sha256, f.status,
+                   c.name AS course_name, c.college, c.semester, f.filename
+            FROM files_fts AS fts
+            JOIN files AS f ON f.id = fts.rowid
+            JOIN courses AS c ON c.id = f.course_id
+            WHERE fts MATCH ?
+               OR LOWER(f.title) LIKE LOWER(?)
+               OR LOWER(f.original_name) LIKE LOWER(?)
+               OR LOWER(c.name) LIKE LOWER(?)
+            ORDER BY f.id DESC LIMIT ? OFFSET ?
+            """,
+            (
+                match_query,
+                pattern,
+                pattern,
+                pattern,
+                page_size,
+                (page - 1) * page_size,
+            ),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        where = """
+            LOWER(f.title) LIKE LOWER(?)
+            OR LOWER(f.original_name) LIKE LOWER(?)
+            OR LOWER(c.name) LIKE LOWER(?)
         """
-        SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
-               c.name AS course_name, c.college, c.semester, f.filename
-        FROM files AS f
-        JOIN courses AS c ON c.id = f.course_id
-        WHERE LOWER(f.title) LIKE LOWER(?)
-           OR LOWER(f.original_name) LIKE LOWER(?)
-           OR LOWER(c.name) LIKE LOWER(?)
-        ORDER BY f.id DESC
-        """,
-        (pattern, pattern, pattern),
-    ).fetchall()
-    return [search_response(row) for row in rows]
+        total = db.execute(
+            f"SELECT COUNT(*) FROM files AS f JOIN courses AS c ON c.id = f.course_id WHERE {where}",
+            (pattern, pattern, pattern),
+        ).fetchone()[0]
+        rows = db.execute(
+            f"""
+            SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
+                   f.mime_type, f.sha256, f.status,
+                   c.name AS course_name, c.college, c.semester, f.filename
+            FROM files AS f JOIN courses AS c ON c.id = f.course_id
+            WHERE {where} ORDER BY f.id DESC LIMIT ? OFFSET ?
+            """,
+            (pattern, pattern, pattern, page_size, (page - 1) * page_size),
+        ).fetchall()
+    return FilePage(
+        **page_response([search_response(row) for row in rows], total, page, page_size)
+    )

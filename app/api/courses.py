@@ -1,9 +1,11 @@
 import sqlite3
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.config import uploads_path
 from app.db import get_db
-from app.schemas import Course, CourseCreate
+from app.schemas import Course, CourseCreate, CourseDetail, CoursePage, CourseUpdate
 
 
 router = APIRouter(tags=["课程"])
@@ -13,18 +15,84 @@ def row_to_course(row: sqlite3.Row) -> Course:
     return Course(**dict(row))
 
 
+def page_response(items: list, total: int, page: int, page_size: int) -> dict:
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
+
+
+def safe_upload_path(filename: str) -> Path | None:
+    root = uploads_path().resolve()
+    path = (root / filename).resolve()
+    return path if root in path.parents else None
+
+
+def delete_stored_files(rows: list[sqlite3.Row]) -> None:
+    for row in rows:
+        path = safe_upload_path(row["filename"])
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # The database record is already gone; a missing cleanup file must
+                # not turn a successful course deletion into a server error.
+                continue
+
+
 @router.get("/api/courses", include_in_schema=False)
 @router.get(
     "/接口/课程",
-    response_model=list[Course],
+    response_model=CoursePage,
     summary="查看课程列表",
     operation_id="查看课程列表",
 )
-def list_courses(db: sqlite3.Connection = Depends(get_db)) -> list[Course]:
+def list_courses(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: sqlite3.Connection = Depends(get_db),
+) -> CoursePage:
+    total = db.execute("SELECT COUNT(*) FROM courses").fetchone()[0]
+    offset = (page - 1) * page_size
     rows = db.execute(
-        "SELECT id, name, college, semester FROM courses ORDER BY id DESC"
+        """
+        SELECT id, name, college, semester FROM courses
+        ORDER BY id DESC LIMIT ? OFFSET ?
+        """,
+        (page_size, offset),
     ).fetchall()
-    return [row_to_course(row) for row in rows]
+    items = [row_to_course(row).model_dump() for row in rows]
+    return CoursePage(**page_response(items, total, page, page_size))
+
+
+@router.get(
+    "/api/courses/{course_id}",
+    include_in_schema=False,
+)
+@router.get(
+    "/接口/课程/{course_id}",
+    response_model=CourseDetail,
+    summary="查看课程详情",
+    operation_id="查看课程详情",
+)
+def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> CourseDetail:
+    row = db.execute(
+        """
+        SELECT c.id, c.name, c.college, c.semester,
+               COUNT(f.id) AS file_count
+        FROM courses AS c
+        LEFT JOIN files AS f ON f.course_id = c.id
+        WHERE c.id = ?
+        GROUP BY c.id
+        """,
+        (course_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+    return CourseDetail(**dict(row))
 
 
 @router.post(
@@ -52,3 +120,62 @@ def create_course(
         (cursor.lastrowid,),
     ).fetchone()
     return row_to_course(row)
+
+
+@router.patch(
+    "/api/courses/{course_id}",
+    include_in_schema=False,
+)
+@router.patch(
+    "/接口/课程/{course_id}",
+    response_model=Course,
+    summary="编辑课程",
+    operation_id="编辑课程",
+)
+def update_course(
+    course_id: int,
+    course: CourseUpdate,
+    db: sqlite3.Connection = Depends(get_db),
+) -> Course:
+    if not course.model_fields_set:
+        raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
+    values = course.model_dump(exclude_unset=True)
+    assignments = ", ".join(f"{field} = ?" for field in values)
+    try:
+        cursor = db.execute(
+            f"UPDATE courses SET {assignments} WHERE id = ?",
+            (*values.values(), course_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="课程不存在")
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    row = db.execute(
+        "SELECT id, name, college, semester FROM courses WHERE id = ?", (course_id,)
+    ).fetchone()
+    return row_to_course(row)
+
+
+@router.delete(
+    "/api/courses/{course_id}",
+    include_in_schema=False,
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@router.delete(
+    "/接口/课程/{course_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除课程",
+    operation_id="删除课程",
+)
+def delete_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
+    files = db.execute(
+        "SELECT filename FROM files WHERE course_id = ?", (course_id,)
+    ).fetchall()
+    cursor = db.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+    if cursor.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="课程不存在")
+    db.commit()
+    delete_stored_files(files)

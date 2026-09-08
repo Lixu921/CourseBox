@@ -1,5 +1,6 @@
 const courseList = document.querySelector("#course-list");
 const courseCount = document.querySelector("#course-count");
+const coursePagination = document.querySelector("#course-pagination");
 const courseHeading = document.querySelector("#course-heading");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
@@ -8,6 +9,8 @@ const courseName = document.querySelector("#course-name");
 const courseContext = document.querySelector("#course-context");
 const fileList = document.querySelector("#file-list");
 const fileCount = document.querySelector("#file-count");
+const filePagination = document.querySelector("#file-pagination");
+const courseActions = document.querySelector("#course-actions");
 const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
 const uploadMessage = document.querySelector("#upload-message");
@@ -30,12 +33,32 @@ function courseUrl(course) {
   return `/课程?编号=${encodeURIComponent(course.id)}&名称=${encodeURIComponent(course.name)}`;
 }
 
-function renderCourses(courses) {
+function renderPagination(container, data, onPage) {
+  container.innerHTML = "";
+  if (!data || data.total_pages <= 1) return;
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.textContent = "上一页";
+  previous.disabled = data.page <= 1;
+  previous.addEventListener("click", () => onPage(data.page - 1));
+  const status = document.createElement("span");
+  status.textContent = `${data.page} / ${data.total_pages}`;
+  const next = document.createElement("button");
+  next.type = "button";
+  next.textContent = "下一页";
+  next.disabled = data.page >= data.total_pages;
+  next.addEventListener("click", () => onPage(data.page + 1));
+  container.append(previous, status, next);
+}
+
+function renderCourses(data) {
+  const courses = data.items || [];
   courseList.innerHTML = "";
   courseHeading.textContent = "全部课程";
-  courseCount.textContent = `${courses.length} 门`;
+  courseCount.textContent = `${data.total} 门`;
   if (!courses.length) {
     showState(courseList, "还没有课程资料");
+    renderPagination(coursePagination, null, () => {});
     return;
   }
 
@@ -60,14 +83,17 @@ function renderCourses(courses) {
     }
     courseList.append(card);
   });
+  renderPagination(coursePagination, data, (page) => loadCourses(page));
 }
 
-function renderSearchResults(results) {
+function renderSearchResults(data) {
+  const results = data.items || [];
   courseList.innerHTML = "";
   courseHeading.textContent = "搜索结果";
-  courseCount.textContent = `${results.length} 份`;
+  courseCount.textContent = `${data.total} 份`;
   if (!results.length) {
     showState(courseList, "没有找到相关资料");
+    renderPagination(coursePagination, null, () => {});
     return;
   }
 
@@ -100,6 +126,7 @@ function renderSearchResults(results) {
     card.append(title, metadata, course, actions);
     courseList.append(card);
   });
+  renderPagination(coursePagination, data, (page) => searchFiles(searchInput.value.trim(), page));
 }
 
 function setSearchLoading(isLoading) {
@@ -107,11 +134,12 @@ function setSearchLoading(isLoading) {
   searchButton.textContent = isLoading ? "搜索中..." : "搜索";
 }
 
-async function loadCourses() {
+async function loadCourses(page = 1) {
   showState(courseList, "正在加载课程...");
   courseCount.textContent = "";
+  coursePagination.innerHTML = "";
   try {
-    const response = await fetch("/接口/课程");
+    const response = await fetch(`/接口/课程?page=${page}&page_size=12`);
     if (!response.ok) throw new Error("课程加载失败");
     renderCourses(await response.json());
   } catch (error) {
@@ -121,13 +149,14 @@ async function loadCourses() {
   }
 }
 
-async function searchFiles(query) {
+async function searchFiles(query, page = 1) {
   showState(courseList, "正在搜索资料...");
   courseHeading.textContent = "搜索结果";
   courseCount.textContent = "";
+  coursePagination.innerHTML = "";
   setSearchLoading(true);
   try {
-    const response = await fetch(`/接口/搜索?关键词=${encodeURIComponent(query)}`);
+    const response = await fetch(`/接口/搜索?关键词=${encodeURIComponent(query)}&page=${page}&page_size=12`);
     if (!response.ok) throw new Error("搜索失败");
     renderSearchResults(await response.json());
   } catch (error) {
@@ -138,11 +167,13 @@ async function searchFiles(query) {
   }
 }
 
-function renderFiles(files) {
+function renderFiles(data, courseId) {
+  const files = data.items || [];
   fileList.innerHTML = "";
-  fileCount.textContent = `${files.length} 份`;
+  fileCount.textContent = `${data.total} 份`;
   if (!files.length) {
     showState(fileList, "这个课程还没有资料，上传第一份吧。");
+    renderPagination(filePagination, null, () => {});
     return;
   }
 
@@ -165,24 +196,110 @@ function renderFiles(files) {
     download.textContent = "下载";
     download.setAttribute("download", "");
 
-    item.append(details, download);
+    const actions = document.createElement("div");
+    actions.className = "file-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "text-button";
+    edit.textContent = "编辑";
+    edit.addEventListener("click", () => editFile(file, courseId));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button danger-button";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => removeFile(file, courseId));
+    actions.append(edit, remove, download);
+    item.append(details, actions);
     fileList.append(item);
   });
+  renderPagination(filePagination, data, (page) => loadCourseFiles(courseId, page));
 }
 
-async function loadCourseFiles(courseId) {
+async function loadCourseFiles(courseId, page = 1) {
   showState(fileList, "正在加载资料...");
+  filePagination.innerHTML = "";
   try {
-    const response = await fetch(`/接口/课程/${encodeURIComponent(courseId)}/资料`);
+    const response = await fetch(`/接口/课程/${encodeURIComponent(courseId)}/资料?page=${page}&page_size=12`);
     if (!response.ok) {
       if (response.status === 404) throw new Error("课程不存在");
       throw new Error("资料加载失败");
     }
-    renderFiles(await response.json());
+    renderFiles(await response.json(), courseId);
   } catch (error) {
     showState(fileList, `${error.message}，请返回课程列表重试。`, true);
     fileCount.textContent = "";
   }
+}
+
+async function editFile(file, courseId) {
+  const title = window.prompt("请输入新的资料标题", file.title);
+  if (title === null) return;
+  const response = await fetch(`/接口/资料/${encodeURIComponent(file.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "资料更新失败。"));
+    return;
+  }
+  await loadCourseFiles(courseId);
+}
+
+async function removeFile(file, courseId) {
+  if (!window.confirm(`确定删除“${file.title}”吗？`)) return;
+  const response = await fetch(`/接口/资料/${encodeURIComponent(file.id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    window.alert(await readError(response, "资料删除失败。"));
+    return;
+  }
+  await loadCourseFiles(courseId);
+}
+
+function renderCourseActions(course) {
+  courseActions.hidden = false;
+  courseActions.innerHTML = "";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "text-button";
+  edit.textContent = "编辑课程";
+  edit.addEventListener("click", () => editCourse(course));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "text-button danger-button";
+  remove.textContent = "删除课程";
+  remove.addEventListener("click", () => removeCourse(course));
+  courseActions.append(edit, remove);
+}
+
+async function editCourse(course) {
+  const name = window.prompt("请输入新的课程名称", course.name);
+  if (name === null) return;
+  const response = await fetch(`/接口/课程/${encodeURIComponent(course.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "课程更新失败。"));
+    return;
+  }
+  const updated = await response.json();
+  courseName.textContent = updated.name;
+  const params = new URLSearchParams(window.location.search);
+  params.set("名称", updated.name);
+  window.history.replaceState({}, "", `/课程?${params}`);
+  renderCourseActions(updated);
+}
+
+async function removeCourse(course) {
+  if (!window.confirm(`确定删除“${course.name}”及其全部资料吗？`)) return;
+  const response = await fetch(`/接口/课程/${encodeURIComponent(course.id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    window.alert(await readError(response, "课程删除失败。"));
+    return;
+  }
+  window.location.href = "/";
 }
 
 function readError(response, fallback) {
@@ -243,9 +360,7 @@ function initHomePage() {
 function initCoursePage() {
   const params = new URLSearchParams(window.location.search);
   const courseId = params.get("编号");
-  const name = params.get("名称");
-
-  courseName.textContent = name || "课程资料";
+  courseName.textContent = "正在加载课程...";
   courseContext.textContent = courseId ? "课程资料共享" : "缺少课程信息";
   if (!courseId || !/^\d+$/.test(courseId)) {
     showState(fileList, "无法识别这门课程，请从首页重新进入。", true);
@@ -254,7 +369,22 @@ function initCoursePage() {
   }
 
   uploadForm.addEventListener("submit", (event) => uploadFile(courseId, event));
-  loadCourseFiles(courseId);
+  fetch(`/接口/课程/${encodeURIComponent(courseId)}`)
+    .then((response) => {
+      if (!response.ok) throw new Error("课程不存在");
+      return response.json();
+    })
+    .then((course) => {
+      courseName.textContent = course.name;
+      courseContext.textContent = `${course.college || ""}${course.college && course.semester ? " · " : ""}${course.semester || ""} · ${course.file_count} 份资料`;
+      renderCourseActions(course);
+      return loadCourseFiles(courseId);
+    })
+    .catch((error) => {
+      courseName.textContent = "课程不存在";
+      courseContext.textContent = error.message;
+      uploadForm.hidden = true;
+    });
 }
 
 if (courseList) initHomePage();

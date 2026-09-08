@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.courses import router as courses_router
 from app.api.files import download_router, router as files_router, search_router
+from app.db import init_db
 
 app = FastAPI(
     title="CourseBox 课盒子",
@@ -15,6 +16,7 @@ app = FastAPI(
     openapi_url="/接口定义",
     swagger_ui_oauth2_redirect_url="/接口文档/授权回调",
 )
+init_db()
 app.include_router(courses_router)
 app.include_router(files_router)
 app.include_router(download_router)
@@ -94,6 +96,12 @@ def localized_openapi():
     schema_titles = {
         "Course": "课程",
         "CourseCreate": "课程创建请求",
+        "CourseUpdate": "课程更新请求",
+        "CourseDetail": "课程详情",
+        "FileUpdate": "资料更新请求",
+        "PageInfo": "分页信息",
+        "CoursePage": "课程分页响应",
+        "FilePage": "资料分页响应",
         "HTTPValidationError": "请求校验错误",
         "ValidationError": "字段校验错误",
     }
@@ -138,6 +146,7 @@ def localized_openapi():
                 "name": "名称",
                 "college": "学院",
                 "semester": "学期",
+                "file_count": "资料数量",
                 "title": "资料标题",
                 "file": "资料文件",
                 "detail": "错误详情",
