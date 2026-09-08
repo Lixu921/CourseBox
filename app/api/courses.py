@@ -3,8 +3,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.auth import require_roles
 from app.config import uploads_path
-from app.db import get_db
+from app.db import get_db, record_audit
 from app.schemas import Course, CourseCreate, CourseDetail, CoursePage, CourseUpdate
 
 
@@ -82,7 +83,7 @@ def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> Cour
     row = db.execute(
         """
         SELECT c.id, c.name, c.college, c.semester,
-               COUNT(f.id) AS file_count
+               COUNT(CASE WHEN f.status = 'approved' THEN f.id END) AS file_count
         FROM courses AS c
         LEFT JOIN files AS f ON f.course_id = c.id
         WHERE c.id = ?
@@ -108,12 +109,15 @@ def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> Cour
     operation_id="创建课程",
 )
 def create_course(
-    course: CourseCreate, db: sqlite3.Connection = Depends(get_db)
+    course: CourseCreate,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
 ) -> Course:
     cursor = db.execute(
         "INSERT INTO courses (name, college, semester) VALUES (?, ?, ?)",
         (course.name, course.college, course.semester),
     )
+    record_audit(db, user["id"], "create", "course", cursor.lastrowid, course.name)
     db.commit()
     row = db.execute(
         "SELECT id, name, college, semester FROM courses WHERE id = ?",
@@ -135,6 +139,7 @@ def create_course(
 def update_course(
     course_id: int,
     course: CourseUpdate,
+    user: sqlite3.Row = Depends(require_roles("admin")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> Course:
     if not course.model_fields_set:
@@ -148,6 +153,7 @@ def update_course(
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="课程不存在")
+        record_audit(db, user["id"], "update", "course", course_id)
         db.commit()
     except HTTPException:
         db.rollback()
@@ -169,7 +175,11 @@ def update_course(
     summary="删除课程",
     operation_id="删除课程",
 )
-def delete_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
+def delete_course(
+    course_id: int,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
     files = db.execute(
         "SELECT filename FROM files WHERE course_id = ?", (course_id,)
     ).fetchall()
@@ -177,5 +187,6 @@ def delete_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> N
     if cursor.rowcount == 0:
         db.rollback()
         raise HTTPException(status_code=404, detail="课程不存在")
+    record_audit(db, user["id"], "delete", "course", course_id)
     db.commit()
     delete_stored_files(files)

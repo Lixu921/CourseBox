@@ -6,6 +6,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "coursebox.db"
 DEFAULT_UPLOADS_PATH = PROJECT_ROOT / "uploads"
 DEFAULT_MAX_FILE_SIZE = 20 * 1024 * 1024
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin12345"
 
 # Keep the allowlist broad enough for ordinary course material while rejecting
 # executable formats by default.
@@ -65,3 +67,13 @@ def allowed_extensions() -> set[str]:
                 extension if extension.startswith(".") else f".{extension}"
             )
     return extensions or DEFAULT_ALLOWED_EXTENSIONS.copy()
+
+
+def bootstrap_admin_username() -> str:
+    value = os.getenv("COURSEBOX_ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME).strip()
+    return value or DEFAULT_ADMIN_USERNAME
+
+
+def bootstrap_admin_password() -> str:
+    value = os.getenv("COURSEBOX_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
+    return value if len(value) >= 8 else DEFAULT_ADMIN_PASSWORD

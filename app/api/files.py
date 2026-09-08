@@ -6,9 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
+from app.api.auth import optional_user, require_roles
 from app.config import DEFAULT_MAX_FILE_SIZE, allowed_extensions, max_file_size, uploads_path
-from app.db import get_db
-from app.schemas import FilePage, FileUpdate
+from app.db import get_db, record_audit
+from app.schemas import FilePage, FileReview, FileUpdate
 
 
 router = APIRouter(tags=["资料"])
@@ -89,21 +90,32 @@ def list_course_files(
     course_id: int,
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    user: sqlite3.Row | None = Depends(optional_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FilePage:
     if not course_exists(course_id, db):
         raise HTTPException(status_code=404, detail="课程不存在")
 
+    visibility = "f.status = 'approved'"
+    params: list[object] = [course_id]
+    if user is not None and user["role"] == "admin":
+        visibility = "1 = 1"
+    elif user is not None and user["role"] == "uploader":
+        visibility = "(f.status = 'approved' OR f.uploaded_by = ?)"
+        params.append(user["id"])
     total = db.execute(
-        "SELECT COUNT(*) FROM files WHERE course_id = ?", (course_id,)
+        f"SELECT COUNT(*) FROM files AS f WHERE f.course_id = ? AND {visibility}",
+        params,
     ).fetchone()[0]
+    params.extend([page_size, (page - 1) * page_size])
     rows = db.execute(
-        """
+        f"""
         SELECT id, course_id, title, original_name, size, upload_time,
                mime_type, sha256, status
-        FROM files WHERE course_id = ? ORDER BY id DESC LIMIT ? OFFSET ?
+        FROM files AS f WHERE f.course_id = ? AND {visibility}
+        ORDER BY id DESC LIMIT ? OFFSET ?
         """,
-        (course_id, page_size, (page - 1) * page_size),
+        params,
     ).fetchall()
     return FilePage(
         **page_response([file_response(row) for row in rows], total, page, page_size)
@@ -125,6 +137,7 @@ async def upload_course_file(
     course_id: int,
     title: str = Form(..., title="资料标题"),
     file: UploadFile = File(..., title="资料文件"),
+    user: sqlite3.Row = Depends(require_roles("admin", "uploader")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     stored_path: Path | None = None
@@ -180,8 +193,9 @@ async def upload_course_file(
             cursor = db.execute(
                 """
                 INSERT INTO files
-                    (course_id, title, filename, original_name, size, mime_type, sha256)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (course_id, title, filename, original_name, size, mime_type, sha256,
+                     status, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     course_id,
@@ -191,7 +205,17 @@ async def upload_course_file(
                     size,
                     content_type or None,
                     digest.hexdigest(),
+                    "approved" if user["role"] == "admin" else "pending",
+                    user["id"],
                 ),
+            )
+            record_audit(
+                db,
+                user["id"],
+                "upload",
+                "file",
+                cursor.lastrowid,
+                f"上传资料 {original_name}",
             )
             db.commit()
         except sqlite3.IntegrityError as error:
@@ -237,14 +261,23 @@ async def upload_course_file(
 def update_file(
     file_id: int,
     update: FileUpdate,
+    user: sqlite3.Row = Depends(require_roles("admin", "uploader")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
+    existing = db.execute(
+        "SELECT uploaded_by FROM files WHERE id = ?", (file_id,)
+    ).fetchone()
+    if existing is None:
+        raise HTTPException(status_code=404, detail="资料不存在")
+    if user["role"] != "admin" and existing["uploaded_by"] != user["id"]:
+        raise HTTPException(status_code=403, detail="没有编辑此资料的权限")
     cursor = db.execute(
         "UPDATE files SET title = ? WHERE id = ?", (update.title, file_id)
     )
     if cursor.rowcount == 0:
         db.rollback()
         raise HTTPException(status_code=404, detail="资料不存在")
+    record_audit(db, user["id"], "update", "file", file_id, "修改资料标题")
     db.commit()
     row = db.execute(
         """
@@ -268,11 +301,20 @@ def update_file(
     summary="删除资料",
     operation_id="删除资料",
 )
-def delete_file(file_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
-    row = db.execute("SELECT filename FROM files WHERE id = ?", (file_id,)).fetchone()
+def delete_file(
+    file_id: int,
+    user: sqlite3.Row = Depends(require_roles("admin", "uploader")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    row = db.execute(
+        "SELECT filename, uploaded_by FROM files WHERE id = ?", (file_id,)
+    ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="资料不存在")
+    if user["role"] != "admin" and row["uploaded_by"] != user["id"]:
+        raise HTTPException(status_code=403, detail="没有删除此资料的权限")
     db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    record_audit(db, user["id"], "delete", "file", file_id)
     db.commit()
     path = stored_file_path(row["filename"])
     if path is not None:
@@ -291,18 +333,31 @@ download_router = APIRouter(tags=["资料"])
     summary="下载资料",
     operation_id="下载资料",
 )
-def download_file(file_id: int, db: sqlite3.Connection = Depends(get_db)):
+def download_file(
+    file_id: int,
+    user: sqlite3.Row | None = Depends(optional_user),
+    db: sqlite3.Connection = Depends(get_db),
+):
     row = db.execute(
-        "SELECT filename, original_name, mime_type FROM files WHERE id = ?", (file_id,)
+        """
+        SELECT filename, original_name, mime_type, status, uploaded_by
+        FROM files WHERE id = ?
+        """,
+        (file_id,),
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="资料不存在")
 
+    if row["status"] != "approved":
+        if user is None or (user["role"] != "admin" and user["id"] != row["uploaded_by"]):
+            raise HTTPException(status_code=404, detail="资料不存在")
     path = stored_file_path(row["filename"])
     if path is None:
         raise HTTPException(status_code=404, detail="文件不存在")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
+    record_audit(db, user["id"] if user else None, "download", "file", file_id)
+    db.commit()
     return FileResponse(
         path,
         filename=row["original_name"],
@@ -340,10 +395,10 @@ def search_files(
             FROM files_fts AS fts
             JOIN files AS f ON f.id = fts.rowid
             JOIN courses AS c ON c.id = f.course_id
-            WHERE fts MATCH ?
+            WHERE f.status = 'approved' AND (fts MATCH ?
                OR LOWER(f.title) LIKE LOWER(?)
                OR LOWER(f.original_name) LIKE LOWER(?)
-               OR LOWER(c.name) LIKE LOWER(?)
+               OR LOWER(c.name) LIKE LOWER(?))
             """,
             (match_query, pattern, pattern, pattern),
         ).fetchone()[0]
@@ -355,10 +410,10 @@ def search_files(
             FROM files_fts AS fts
             JOIN files AS f ON f.id = fts.rowid
             JOIN courses AS c ON c.id = f.course_id
-            WHERE fts MATCH ?
+            WHERE f.status = 'approved' AND (fts MATCH ?
                OR LOWER(f.title) LIKE LOWER(?)
                OR LOWER(f.original_name) LIKE LOWER(?)
-               OR LOWER(c.name) LIKE LOWER(?)
+               OR LOWER(c.name) LIKE LOWER(?))
             ORDER BY f.id DESC LIMIT ? OFFSET ?
             """,
             (
@@ -372,9 +427,9 @@ def search_files(
         ).fetchall()
     except sqlite3.OperationalError:
         where = """
-            LOWER(f.title) LIKE LOWER(?)
+            f.status = 'approved' AND (LOWER(f.title) LIKE LOWER(?)
             OR LOWER(f.original_name) LIKE LOWER(?)
-            OR LOWER(c.name) LIKE LOWER(?)
+            OR LOWER(c.name) LIKE LOWER(?))
         """
         total = db.execute(
             f"SELECT COUNT(*) FROM files AS f JOIN courses AS c ON c.id = f.course_id WHERE {where}",
@@ -393,3 +448,46 @@ def search_files(
     return FilePage(
         **page_response([search_response(row) for row in rows], total, page, page_size)
     )
+
+
+@router.patch(
+    "/api/files/{file_id}/review",
+    include_in_schema=False,
+)
+@router.patch(
+    "/接口/资料/{file_id}/审核",
+    response_model=dict,
+    summary="审核资料",
+    operation_id="审核资料",
+)
+def review_file(
+    file_id: int,
+    review: FileReview,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    cursor = db.execute(
+        "UPDATE files SET status = ? WHERE id = ?",
+        (review.status, file_id),
+    )
+    if cursor.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="资料不存在")
+    record_audit(
+        db,
+        user["id"],
+        review.status,
+        "file",
+        file_id,
+        f"资料审核结果：{review.status}",
+    )
+    db.commit()
+    row = db.execute(
+        """
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status
+        FROM files WHERE id = ?
+        """,
+        (file_id,),
+    ).fetchone()
+    return file_response(row)

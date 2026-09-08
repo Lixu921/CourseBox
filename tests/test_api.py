@@ -9,6 +9,21 @@ def create_client() -> TestClient:
     return TestClient(app)
 
 
+def login_admin(client: TestClient) -> None:
+    response = client.post(
+        "/接口/登录", json={"username": "admin", "password": "admin12345"}
+    )
+    assert response.status_code == 200, response.text
+
+
+def login_user(client: TestClient, username: str, password: str) -> dict:
+    response = client.post(
+        "/接口/登录", json={"username": username, "password": password}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_health_check():
     client = create_client()
     response = client.get("/\u63a5\u53e3/\u5065\u5eb7")
@@ -39,6 +54,7 @@ def test_create_and_list_courses(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     create_response = client.post(
         "/\u63a5\u53e3/\u8bfe\u7a0b",
         json={"name": "Data Structures", "college": "Computer Science", "semester": "2026"},
@@ -57,6 +73,7 @@ def test_create_and_list_courses(tmp_path, monkeypatch):
 
 def test_course_name_is_required():
     client = create_client()
+    login_admin(client)
     response = client.post("/\u63a5\u53e3/\u8bfe\u7a0b", json={"name": ""})
 
     assert response.status_code == 422
@@ -70,6 +87,7 @@ def test_empty_title_does_not_leave_upload_open_or_file(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/api/courses", json={"name": "course"}).json()
     response = client.post(
         f"/api/courses/{course['id']}/files",
@@ -89,6 +107,7 @@ def test_upload_and_list_files(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/\u63a5\u53e3/\u8bfe\u7a0b", json={"name": "Data Structures"}).json()
     response = client.post(
         f"/\u63a5\u53e3/\u8bfe\u7a0b/{course['id']}/\u8d44\u6599",
@@ -111,6 +130,7 @@ def test_upload_and_list_files(tmp_path, monkeypatch):
 
 def test_upload_to_missing_course_returns_404():
     client = create_client()
+    login_admin(client)
     response = client.post(
         "/\u63a5\u53e3/\u8bfe\u7a0b/999999/\u8d44\u6599",
         data={"title": "Lesson"},
@@ -128,6 +148,7 @@ def test_download_and_search_file(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/\u63a5\u53e3/\u8bfe\u7a0b", json={"name": "Data Structures"}).json()
     upload = client.post(
         f"/\u63a5\u53e3/\u8bfe\u7a0b/{course['id']}/\u8d44\u6599",
@@ -168,6 +189,7 @@ def test_upload_rejects_unsupported_and_empty_files(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/api/courses", json={"name": "course"}).json()
 
     executable = client.post(
@@ -201,6 +223,7 @@ def test_upload_uses_configured_size_limit_and_cleans_file(tmp_path, monkeypatch
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/api/courses", json={"name": "course"}).json()
     response = client.post(
         f"/api/courses/{course['id']}/files",
@@ -243,6 +266,7 @@ def test_chinese_routes_are_the_only_public_routes(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post(
         "/\u63a5\u53e3/\u8bfe\u7a0b", json={"name": "Chinese Route Test"}
     ).json()
@@ -284,6 +308,7 @@ def test_course_pagination_and_detail(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     for name in ("课程一", "课程二", "课程三"):
         assert client.post("/接口/课程", json={"name": name}).status_code == 201
 
@@ -313,6 +338,7 @@ def test_course_and_file_can_be_updated_and_deleted_with_disk_cleanup(tmp_path, 
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/接口/课程", json={"name": "旧课程"}).json()
     upload = client.post(
         f"/接口/课程/{course['id']}/资料",
@@ -351,6 +377,7 @@ def test_duplicate_file_is_rejected_and_file_metadata_is_returned(tmp_path, monk
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/接口/课程", json={"name": "课程"}).json()
     payload = {"title": "讲义"}
     first = client.post(
@@ -379,6 +406,7 @@ def test_file_pagination_and_search_pagination(tmp_path, monkeypatch):
     from app.db import init_db
 
     init_db()
+    login_admin(client)
     course = client.post("/接口/课程", json={"name": "算法"}).json()
     for index in range(3):
         response = client.post(
@@ -441,4 +469,140 @@ def test_old_database_is_migrated_with_search_index(tmp_path, monkeypatch):
     response = client.get("/接口/搜索", params={"q": "旧资料"})
     assert response.status_code == 200
     assert response.json()["total"] == 1
+    connection.close()
+
+
+def test_authentication_and_role_permissions(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    assert client.post(
+        "/接口/登录", json={"username": "admin", "password": "wrong-pass"}
+    ).status_code == 401
+    assert client.post("/接口/课程", json={"name": "Anonymous Blocked"}).status_code == 401
+
+    admin = login_user(client, "admin", "admin12345")
+    assert admin["username"] == "admin"
+    assert admin["role"] == "admin"
+    assert client.get("/接口/当前用户").json() == admin
+
+    assert client.post(
+        "/接口/用户",
+        json={"username": "uploader1", "password": "uploader-pass", "role": "uploader"},
+    ).status_code == 201
+    assert client.post(
+        "/接口/用户",
+        json={"username": "viewer1", "password": "viewer-pass", "role": "viewer"},
+    ).status_code == 201
+
+    course = client.post("/接口/课程", json={"name": "Permission Course"}).json()
+    viewer = create_client()
+    login_user(viewer, "viewer1", "viewer-pass")
+    assert viewer.post("/接口/课程", json={"name": "Viewer Blocked"}).status_code == 403
+    assert viewer.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "blocked"},
+        files={"file": ("blocked.txt", b"blocked", "text/plain")},
+    ).status_code == 403
+
+    uploader = create_client()
+    login_user(uploader, "uploader1", "uploader-pass")
+    uploaded = uploader.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "Pending Notes"},
+        files={"file": ("pending.txt", b"pending-content", "text/plain")},
+    )
+    assert uploaded.status_code == 201
+    assert uploaded.json()["status"] == "pending"
+
+    assert client.post(
+        "/接口/用户",
+        json={"username": "uploader1", "password": "uploader-pass", "role": "uploader"},
+    ).status_code == 409
+    assert uploader.get("/接口/当前用户").json()["role"] == "uploader"
+    assert uploader.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 1
+
+
+def test_resource_governance_and_audit_logs(tmp_path, monkeypatch):
+    import sqlite3
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_dir))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    assert client.post(
+        "/接口/用户",
+        json={"username": "uploader1", "password": "uploader-pass", "role": "uploader"},
+    ).status_code == 201
+    assert client.post(
+        "/接口/用户",
+        json={"username": "uploader2", "password": "uploader-pass", "role": "uploader"},
+    ).status_code == 201
+    course = client.post("/接口/课程", json={"name": "Governed Course"}).json()
+
+    uploader1 = create_client()
+    login_user(uploader1, "uploader1", "uploader-pass")
+    pending = uploader1.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "Pending Material"},
+        files={"file": ("pending.txt", b"pending", "text/plain")},
+    ).json()
+    pending_id = pending["id"]
+
+    assert client.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 1
+    assert create_client().get(
+        f"/接口/课程/{course['id']}/资料"
+    ).json()["total"] == 0
+    assert create_client().get(
+        "/接口/搜索", params={"q": "Pending Material"}
+    ).json()["total"] == 0
+    assert create_client().get(f"/接口/资料/{pending_id}/下载").status_code == 404
+    assert uploader1.get(f"/接口/资料/{pending_id}/下载").content == b"pending"
+
+    uploader2 = create_client()
+    login_user(uploader2, "uploader2", "uploader-pass")
+    other = uploader2.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "Other Material"},
+        files={"file": ("other.txt", b"other", "text/plain")},
+    ).json()
+    assert uploader1.patch(
+        f"/接口/资料/{other['id']}", json={"title": "Not Allowed"}
+    ).status_code == 403
+    assert uploader1.delete(f"/接口/资料/{other['id']}").status_code == 403
+
+    rejected = client.patch(
+        f"/接口/资料/{pending_id}/审核", json={"status": "rejected"}
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert create_client().get(f"/接口/资料/{pending_id}/下载").status_code == 404
+    assert client.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 2
+
+    approved = client.patch(
+        f"/接口/资料/{other['id']}/审核", json={"status": "approved"}
+    )
+    assert approved.status_code == 200
+    public_client = create_client()
+    public_files = public_client.get(f"/接口/课程/{course['id']}/资料").json()
+    assert public_files["total"] == 1
+    assert public_files["items"][0]["id"] == other["id"]
+    assert public_client.get(f"/接口/资料/{other['id']}/下载").content == b"other"
+    assert public_client.get("/接口/搜索", params={"q": "Other Material"}).json()["total"] == 1
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    actions = {
+        row[0]
+        for row in connection.execute("SELECT action FROM audit_logs").fetchall()
+    }
+    assert {"login", "create", "upload", "rejected", "approved", "download"} <= actions
     connection.close()

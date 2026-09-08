@@ -5,6 +5,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
 from app.api.files import download_router, router as files_router, search_router
 from app.db import init_db
@@ -21,6 +22,7 @@ app.include_router(courses_router)
 app.include_router(files_router)
 app.include_router(download_router)
 app.include_router(search_router)
+app.include_router(auth_router)
 
 STATIC_PATH = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_PATH), name="legacy-static")
@@ -92,6 +94,9 @@ def localized_openapi():
                 elif parameter.get("name") == "file_id":
                     parameter["name"] = "资料编号"
                     parameter.setdefault("schema", {})["title"] = "资料编号"
+                elif parameter.get("name") == "coursebox_session":
+                    parameter["name"] = "会话令牌"
+                    parameter.setdefault("schema", {})["title"] = "会话令牌"
 
     schema_titles = {
         "Course": "课程",
@@ -99,6 +104,10 @@ def localized_openapi():
         "CourseUpdate": "课程更新请求",
         "CourseDetail": "课程详情",
         "FileUpdate": "资料更新请求",
+        "LoginRequest": "登录请求",
+        "UserCreate": "用户创建请求",
+        "User": "用户",
+        "FileReview": "资料审核请求",
         "PageInfo": "分页信息",
         "CoursePage": "课程分页响应",
         "FilePage": "资料分页响应",
@@ -149,6 +158,13 @@ def localized_openapi():
                 "file_count": "资料数量",
                 "title": "资料标题",
                 "file": "资料文件",
+                "username": "用户名",
+                "password": "密码",
+                "role": "角色",
+                "status": "状态",
+                "uploaded_by": "上传者",
+                "mime_type": "MIME 类型",
+                "sha256": "SHA-256 哈希",
                 "detail": "错误详情",
                 "loc": "位置",
                 "msg": "错误信息",

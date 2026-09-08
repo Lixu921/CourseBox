@@ -1,7 +1,12 @@
 import sqlite3
 from typing import Generator
 
-from app.config import database_path, uploads_path
+from app.config import (
+    bootstrap_admin_password,
+    bootstrap_admin_username,
+    database_path,
+    uploads_path,
+)
 
 
 # Kept as a compatibility alias for callers that imported the old constant.
@@ -37,7 +42,36 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 mime_type TEXT,
                 sha256 TEXT,
                 status TEXT NOT NULL DEFAULT 'approved',
+                uploaded_by INTEGER,
                 FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'uploader', 'viewer')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                detail TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
             );
             """
         )
@@ -50,9 +84,15 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_files_original_name ON files(original_name);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_files_course_sha256
                 ON files(course_id, sha256) WHERE sha256 IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
+            CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON files(uploaded_by);
+            CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
             """
         )
         ensure_fts(connection)
+        ensure_bootstrap_admin(connection)
         connection.commit()
     finally:
         if close_connection:
@@ -85,10 +125,39 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
         "mime_type": "ALTER TABLE files ADD COLUMN mime_type TEXT",
         "sha256": "ALTER TABLE files ADD COLUMN sha256 TEXT",
         "status": "ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'",
+        "uploaded_by": "ALTER TABLE files ADD COLUMN uploaded_by INTEGER",
     }
     for column, statement in migrations.items():
         if column not in columns:
             connection.execute(statement)
+
+
+def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:
+    if connection.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None:
+        return
+    from app.auth import hash_password
+
+    connection.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+        (bootstrap_admin_username(), hash_password(bootstrap_admin_password())),
+    )
+
+
+def record_audit(
+    connection: sqlite3.Connection,
+    actor_id: int | None,
+    action: str,
+    entity_type: str,
+    entity_id: int | None = None,
+    detail: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, detail)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (actor_id, action, entity_type, entity_id, detail),
+    )
 
 
 def ensure_fts(connection: sqlite3.Connection) -> bool:

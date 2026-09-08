@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
+
+from app.auth import hash_password
 
 
 class CourseCreate(BaseModel):
@@ -41,6 +45,46 @@ class FileUpdate(BaseModel):
         if not value:
             raise ValueError("资料标题不能为空")
         return value
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=80)
+    password: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("username")
+    @classmethod
+    def username_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("用户名不能为空")
+        return value
+
+
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=80)
+    password: str = Field(..., min_length=8, max_length=200)
+    role: Literal["admin", "uploader", "viewer"] = "viewer"
+
+    @field_validator("username")
+    @classmethod
+    def username_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("用户名不能为空")
+        return value
+
+    def password_hash(self) -> str:
+        return hash_password(self.password)
+
+
+class User(BaseModel):
+    id: int
+    username: str
+    role: Literal["admin", "uploader", "viewer"]
+
+
+class FileReview(BaseModel):
+    status: Literal["approved", "rejected"]
 
 
 class Course(BaseModel):
