@@ -1,0 +1,14 @@
+.git
+.github
+.pytest_cache
+.pytest-tmp-run
+__pycache__
+*.pyc
+.env
+data
+uploads
+backups
+tests
+TASKBOOK.md
+TASKBOOK_OPTIMIZATION.md
+README.md
