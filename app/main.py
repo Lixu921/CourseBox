@@ -188,6 +188,7 @@ def homepage():
 
 
 @app.get("/课程", include_in_schema=False)
+@app.get("/course", include_in_schema=False)
 def course_page():
     return FileResponse(STATIC_PATH / "course.html")
 

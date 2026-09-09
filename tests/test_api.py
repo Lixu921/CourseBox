@@ -64,15 +64,23 @@ def test_pages_are_available():
     client = create_client()
     homepage = client.get("/")
     course_page = client.get("/\u8bfe\u7a0b")
+    ascii_course_page = client.get("/course?id=1")
     chinese_script = client.get("/\u8d44\u6e90/\u811a\u672c.js")
     chinese_style = client.get("/\u8d44\u6e90/\u6837\u5f0f.css")
+    static_script = client.get("/static/app.js")
+    static_style = client.get("/static/style.css")
 
     assert homepage.status_code == 200
     assert 'id="search-form"' in homepage.text
     assert course_page.status_code == 200
+    assert ascii_course_page.status_code == 200
     assert 'id="upload-form"' in course_page.text
     assert chinese_script.status_code == 200
     assert chinese_style.status_code == 200
+    assert static_script.status_code == 200
+    assert static_style.status_code == 200
+    assert 'href="/static/style.css"' in homepage.text
+    assert 'src="/static/app.js"' in homepage.text
     assert 'id="login-form"' in homepage.text
     assert 'id="admin-course-panel"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
