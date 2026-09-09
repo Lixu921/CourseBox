@@ -1,11 +1,15 @@
 import sqlite3
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.auth import require_roles
-from app.config import uploads_path
-from app.db import get_db, record_audit
+from app.db import (
+    discard_staged_files,
+    get_db,
+    record_audit,
+    restore_staged_files,
+    stage_stored_files,
+)
 from app.schemas import Course, CourseCreate, CourseDetail, CoursePage, CourseUpdate
 
 
@@ -24,24 +28,6 @@ def page_response(items: list, total: int, page: int, page_size: int) -> dict:
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size,
     }
-
-
-def safe_upload_path(filename: str) -> Path | None:
-    root = uploads_path().resolve()
-    path = (root / filename).resolve()
-    return path if root in path.parents else None
-
-
-def delete_stored_files(rows: list[sqlite3.Row]) -> None:
-    for row in rows:
-        path = safe_upload_path(row["filename"])
-        if path is not None:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                # The database record is already gone; a missing cleanup file must
-                # not turn a successful course deletion into a server error.
-                continue
 
 
 @router.get("/api/courses", include_in_schema=False)
@@ -183,10 +169,19 @@ def delete_course(
     files = db.execute(
         "SELECT filename FROM files WHERE course_id = ?", (course_id,)
     ).fetchall()
-    cursor = db.execute("DELETE FROM courses WHERE id = ?", (course_id,))
-    if cursor.rowcount == 0:
-        db.rollback()
+    course = db.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone()
+    if course is None:
         raise HTTPException(status_code=404, detail="课程不存在")
-    record_audit(db, user["id"], "delete", "course", course_id)
-    db.commit()
-    delete_stored_files(files)
+    staged = []
+    try:
+        staged = stage_stored_files(files, db)
+        cursor = db.execute("DELETE FROM courses WHERE id = ?", (course_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="课程不存在")
+        record_audit(db, user["id"], "delete", "course", course_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        restore_staged_files(staged, db)
+        raise
+    discard_staged_files(staged, db)

@@ -1,3 +1,4 @@
+import logging
 from urllib.parse import unquote
 
 from fastapi.testclient import TestClient
@@ -24,12 +25,39 @@ def login_user(client: TestClient, username: str, password: str) -> dict:
     return response.json()
 
 
-def test_health_check():
-    client = create_client()
+def test_health_check(tmp_path, monkeypatch):
+    client = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "health.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
     response = client.get("/\u63a5\u53e3/\u5065\u5eb7")
 
     assert response.status_code == 200
     assert response.json()["app"] == "CourseBox"
+    assert response.json()["status"] == "ok"
+    assert {"database", "uploads", "disk"} == set(response.json()["checks"])
+    assert all(item["status"] == "ok" for item in response.json()["checks"].values())
+
+
+def test_health_check_reports_unusable_upload_path(tmp_path, monkeypatch):
+    client = TestClient(app, raise_server_exceptions=False)
+    database = tmp_path / "health.db"
+    upload_path = tmp_path / "upload-file"
+    upload_path.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_path))
+
+    from app.db import init_db
+
+    init_db()
+    response = client.get("/接口/健康")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["checks"]["uploads"]["status"] == "error"
 
 
 def test_pages_are_available():
@@ -81,6 +109,93 @@ def test_course_name_is_required():
     response = client.post("/\u63a5\u53e3/\u8bfe\u7a0b", json={"name": ""})
 
     assert response.status_code == 422
+
+
+def test_text_fields_are_trimmed_and_have_length_limits(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    created = client.post(
+        "/接口/课程",
+        json={"name": "  数据结构  ", "college": "  计算机学院  ", "semester": "  2026 春  "},
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == "数据结构"
+    assert created.json()["college"] == "计算机学院"
+    assert created.json()["semester"] == "2026 春"
+
+    blank_optional = client.patch(
+        f"/接口/课程/{created.json()['id']}",
+        json={"college": "   ", "semester": "   "},
+    )
+    assert blank_optional.status_code == 200
+    assert blank_optional.json()["college"] is None
+    assert blank_optional.json()["semester"] is None
+    assert client.patch(
+        f"/接口/课程/{created.json()['id']}", json={"name": None}
+    ).status_code == 422
+    assert client.post("/接口/课程", json={"name": "x" * 201}).status_code == 422
+    assert client.post(
+        "/接口/课程", json={"name": "x", "college": "y" * 121}
+    ).status_code == 422
+    assert client.post("/接口/课程", json={"name": 123}).status_code == 422
+
+
+def test_file_title_and_filename_have_length_limits(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "课程"}).json()
+    too_long_title = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "x" * 201},
+        files={"file": ("notes.txt", b"notes", "text/plain")},
+    )
+    too_long_name = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "资料"},
+        files={"file": ("x" * 256 + ".txt", b"notes", "text/plain")},
+    )
+    assert too_long_title.status_code == 422
+    assert too_long_name.status_code == 422
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_api_errors_have_uniform_shape():
+    client = create_client()
+    response = client.get("/接口/课程/999999")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["detail"] == "课程不存在"
+    assert body["error"]["code"] == "not_found"
+    assert body["error"]["message"] == "课程不存在"
+    assert body["error"]["request_id"] == response.headers["x-request-id"]
+
+
+def test_request_id_and_structured_log(caplog):
+    client = create_client()
+    with caplog.at_level(logging.INFO, logger="coursebox"):
+        response = client.get("/接口/健康", headers={"X-Request-ID": "test-request-1"})
+
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "test-request-1"
+    record = next(record for record in caplog.records if record.name == "coursebox")
+    assert record.event == "http_request"
+    assert record.request_id == "test-request-1"
+    assert record.method == "GET"
+    assert record.path == "/接口/健康"
+    assert record.status_code == 200
+    assert record.duration_ms >= 0
 
 
 def test_empty_title_does_not_leave_upload_open_or_file(tmp_path, monkeypatch):
@@ -216,6 +331,55 @@ def test_upload_rejects_unsupported_and_empty_files(tmp_path, monkeypatch):
     assert disguised.status_code == 415
     assert empty.status_code == 422
     assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_upload_rejects_executable_extension_even_when_configured(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_ALLOWED_EXTENSIONS", ".txt,.exe")
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "课程"}).json()
+    response = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "危险文件"},
+        files={"file": ("run.exe", b"not executable", "application/octet-stream")},
+    )
+    assert response.status_code == 415
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_download_rejects_path_outside_upload_directory(tmp_path, monkeypatch):
+    import sqlite3
+
+    client = create_client()
+    database = tmp_path / "test.db"
+    upload_dir = tmp_path / "uploads"
+    outside = tmp_path / "outside.txt"
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_dir))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "课程"}).json()
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "INSERT INTO files (course_id, title, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
+        (course["id"], "越界", "../outside.txt", "outside.txt", 1),
+    )
+    connection.commit()
+    connection.close()
+    outside.write_text("private", encoding="utf-8")
+
+    response = client.get("/接口/资料/1/下载")
+    assert response.status_code == 404
+    assert outside.read_text(encoding="utf-8") == "private"
 
 
 def test_upload_uses_configured_size_limit_and_cleans_file(tmp_path, monkeypatch):
@@ -371,6 +535,100 @@ def test_course_and_file_can_be_updated_and_deleted_with_disk_cleanup(tmp_path, 
     assert client.get(f"/接口/资料/{file_id}/下载").status_code == 404
     assert not list(upload_dir.glob("*"))
     assert client.delete(f"/接口/课程/{course['id']}").status_code == 404
+
+
+def test_course_delete_restores_file_when_transaction_fails(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_dir))
+
+    from app.api import courses as courses_api
+    from app.db import init_db
+
+    init_db()
+    client = TestClient(app, raise_server_exceptions=False)
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "待回滚课程"}).json()
+    upload = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "待回滚资料"},
+        files={"file": ("rollback.txt", b"rollback-content", "text/plain")},
+    )
+    assert upload.status_code == 201
+    stored_file = next(upload_dir.glob("*"))
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("forced transaction failure")
+
+    original_record_audit = courses_api.record_audit
+    monkeypatch.setattr(courses_api, "record_audit", fail_audit)
+    response = client.delete(f"/接口/课程/{course['id']}")
+
+    assert response.status_code == 500
+    assert stored_file.read_bytes() == b"rollback-content"
+    monkeypatch.setattr(courses_api, "record_audit", original_record_audit)
+    assert client.get(f"/接口/课程/{course['id']}").status_code == 200
+    connection = sqlite3.connect(tmp_path / "test.db")
+    assert connection.execute("SELECT COUNT(*) FROM file_deletion_journal").fetchone()[0] == 0
+    connection.close()
+
+
+def test_course_delete_reports_staging_failure_without_masking_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.api import courses as courses_api
+    from app.db import init_db
+
+    init_db()
+    client = TestClient(app, raise_server_exceptions=False)
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "暂存失败课程"}).json()
+
+    def fail_staging(*args, **kwargs):
+        raise OSError("forced staging failure")
+
+    monkeypatch.setattr(courses_api, "stage_stored_files", fail_staging)
+    response = client.delete(f"/接口/课程/{course['id']}")
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+    assert client.get(f"/接口/课程/{course['id']}").status_code == 200
+
+
+def test_file_delete_restores_file_when_transaction_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_dir))
+
+    from app.api import files as files_api
+    from app.db import init_db
+
+    init_db()
+    client = TestClient(app, raise_server_exceptions=False)
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "资料回滚课程"}).json()
+    upload = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "资料"},
+        files={"file": ("file-rollback.txt", b"file-rollback", "text/plain")},
+    )
+    file_id = upload.json()["id"]
+    stored_file = next(upload_dir.glob("*"))
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("forced transaction failure")
+
+    original_record_audit = files_api.record_audit
+    monkeypatch.setattr(files_api, "record_audit", fail_audit)
+    response = client.delete(f"/接口/资料/{file_id}")
+
+    assert response.status_code == 500
+    assert stored_file.read_bytes() == b"file-rollback"
+    monkeypatch.setattr(files_api, "record_audit", original_record_audit)
+    assert client.get(f"/接口/资料/{file_id}/下载").content == b"file-rollback"
 
 
 def test_duplicate_file_is_rejected_and_file_metadata_is_returned(tmp_path, monkeypatch):

@@ -5,4 +5,5 @@ data/
 uploads/
 config.json
 .env
-
+.pytest_cache/
+.pytest-tmp-run/

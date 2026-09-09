@@ -534,7 +534,7 @@ function uploadFile(courseId, event) {
       body = {};
     }
     if (request.status < 200 || request.status >= 300) {
-      uploadMessage.textContent = body.detail || "上传失败，请稍后重试。";
+      uploadMessage.textContent = body.error?.message || body.detail || "上传失败，请稍后重试。";
       uploadMessage.className = "form-message error-message";
       finishUpload();
       return;
@@ -596,7 +596,7 @@ async function createCourse(event) {
 
 function readError(response, fallback) {
   return response.json()
-    .then((body) => body.detail || fallback)
+    .then((body) => body.error?.message || body.detail || fallback)
     .catch(() => fallback);
 }
 

@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import hashlib
 import uuid
@@ -8,11 +9,18 @@ from fastapi.responses import FileResponse
 
 from app.api.auth import optional_user, require_roles
 from app.config import DEFAULT_MAX_FILE_SIZE, allowed_extensions, max_file_size, uploads_path
-from app.db import get_db, record_audit
+from app.db import (
+    discard_staged_files,
+    get_db,
+    record_audit,
+    restore_staged_files,
+    stage_stored_files,
+)
 from app.schemas import FilePage, FileReview, FileUpdate
 
 
 router = APIRouter(tags=["资料"])
+logger = logging.getLogger("coursebox")
 DANGEROUS_MIME_TYPES = {
     "application/vnd.microsoft.portable-executable",
     "application/x-bat",
@@ -23,6 +31,33 @@ DANGEROUS_MIME_TYPES = {
     "application/x-powershell",
     "application/x-sh",
     "text/x-shellscript",
+}
+DANGEROUS_EXTENSIONS = {
+    ".apk",
+    ".appx",
+    ".bat",
+    ".cmd",
+    ".com",
+    ".cpl",
+    ".dll",
+    ".dmg",
+    ".exe",
+    ".hta",
+    ".jar",
+    ".js",
+    ".jse",
+    ".msi",
+    ".msp",
+    ".ps1",
+    ".pif",
+    ".scr",
+    ".sh",
+    ".sys",
+    ".vb",
+    ".vbe",
+    ".vbs",
+    ".wsf",
+    ".wsh",
 }
 
 
@@ -77,6 +112,20 @@ def fts_query(keyword: str) -> str:
     return " AND ".join(
         f'"{part.replace(chr(34), "")}"' for part in keyword.split() if part
     )
+
+
+def remove_stored_file(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        # Cleanup must never replace the original API error.
+        logger.warning(
+            "stored file cleanup failed: %s",
+            error,
+            extra={"event": "file_cleanup"},
+        )
 
 
 @router.get("/api/courses/{course_id}/files", include_in_schema=False)
@@ -148,6 +197,8 @@ async def upload_course_file(
         title = title.strip()
         if not title:
             raise HTTPException(status_code=422, detail="资料标题不能为空")
+        if len(title) > 200:
+            raise HTTPException(status_code=422, detail="资料标题不能超过 200 个字符")
 
         if not file.filename or not file.filename.strip():
             raise HTTPException(status_code=422, detail="文件名不能为空")
@@ -155,7 +206,10 @@ async def upload_course_file(
         suffix = Path(original_name).suffix
         if len(original_name) > 255:
             raise HTTPException(status_code=422, detail="文件名不能超过 255 个字符")
-        if suffix.lower() not in allowed_extensions():
+        normalized_suffix = suffix.lower()
+        if normalized_suffix in DANGEROUS_EXTENSIONS:
+            raise HTTPException(status_code=415, detail="不允许上传可执行文件")
+        if normalized_suffix not in allowed_extensions():
             raise HTTPException(status_code=415, detail="暂不支持该文件类型")
         content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
         if content_type in DANGEROUS_MIME_TYPES:
@@ -227,12 +281,10 @@ async def upload_course_file(
             db.rollback()
             raise
     except HTTPException:
-        if stored_path is not None:
-            stored_path.unlink(missing_ok=True)
+        remove_stored_file(stored_path)
         raise
     except Exception:
-        if stored_path is not None:
-            stored_path.unlink(missing_ok=True)
+        remove_stored_file(stored_path)
         db.rollback()
         raise
     finally:
@@ -313,15 +365,16 @@ def delete_file(
         raise HTTPException(status_code=404, detail="资料不存在")
     if user["role"] != "admin" and row["uploaded_by"] != user["id"]:
         raise HTTPException(status_code=403, detail="没有删除此资料的权限")
-    db.execute("DELETE FROM files WHERE id = ?", (file_id,))
-    record_audit(db, user["id"], "delete", "file", file_id)
-    db.commit()
-    path = stored_file_path(row["filename"])
-    if path is not None:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    staged = stage_stored_files([row], db)
+    try:
+        db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        record_audit(db, user["id"], "delete", "file", file_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        restore_staged_files(staged, db)
+        raise
+    discard_staged_files(staged, db)
 
 
 download_router = APIRouter(tags=["资料"])

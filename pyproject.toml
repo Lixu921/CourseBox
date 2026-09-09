@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coursebox"
+version = "1.0.0"
+description = "课盒子课程资料共享平台"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.141.1",
+    "starlette>=0.46.0,<2.0.0",
+    "python-multipart==0.0.32",
+    "uvicorn==0.52.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "httpx2==2.12.0",
+    "pytest==9.1.1",
+    "ruff>=0.12,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["data", "uploads"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

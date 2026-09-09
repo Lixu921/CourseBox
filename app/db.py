@@ -1,4 +1,7 @@
+import logging
 import sqlite3
+import uuid
+from pathlib import Path
 from typing import Generator
 
 from app.config import (
@@ -11,6 +14,7 @@ from app.config import (
 
 # Kept as a compatibility alias for callers that imported the old constant.
 UPLOADS_PATH = uploads_path()
+logger = logging.getLogger("coursebox")
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -72,6 +76,12 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS file_deletion_journal (
+                staged_name TEXT PRIMARY KEY,
+                original_name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             """
         )
@@ -158,6 +168,170 @@ def record_audit(
         """,
         (actor_id, action, entity_type, entity_id, detail),
     )
+
+
+def stored_file_path(filename: str) -> Path | None:
+    root = uploads_path().resolve()
+    path = (root / filename).resolve()
+    return path if root in path.parents else None
+
+
+def stage_stored_files(
+    rows: list[sqlite3.Row], connection: sqlite3.Connection
+) -> list[tuple[Path, Path]]:
+    """Move files aside while a deletion transaction is still reversible."""
+
+    root = uploads_path().resolve()
+    staged: list[tuple[Path, Path]] = []
+    candidates: list[tuple[Path, Path, str]] = []
+    for row in rows:
+        path = stored_file_path(row["filename"])
+        if path is None or not path.exists():
+            continue
+        if not path.is_file():
+            raise OSError(f"stored path is not a regular file: {path}")
+        staged_path = root / f".coursebox-deleting-{uuid.uuid4().hex}"
+        candidates.append((path, staged_path, row["filename"]))
+
+    if not candidates:
+        return staged
+
+    connection.executemany(
+        "INSERT INTO file_deletion_journal (staged_name, original_name) VALUES (?, ?)",
+        [(staged.name, original_name) for _, staged, original_name in candidates],
+    )
+    connection.commit()
+    try:
+        for original, staged_path, _ in candidates:
+            original.replace(staged_path)
+            staged.append((original, staged_path))
+    except Exception:
+        restore_staged_files(staged, connection)
+        remaining = [staged_path.name for _, staged_path, _ in candidates]
+        clear_deletion_journal(connection, remaining)
+        raise
+    return staged
+
+
+def restore_staged_files(
+    staged: list[tuple[Path, Path]], connection: sqlite3.Connection
+) -> None:
+    restored_names: list[str] = []
+    for original_path, staged_path in reversed(staged):
+        if not staged_path.exists():
+            continue
+        try:
+            staged_path.replace(original_path)
+            restored_names.append(staged_path.name)
+        except OSError as error:
+            logger.error(
+                "staged file restore failed: %s",
+                error,
+                extra={"event": "file_cleanup"},
+            )
+    clear_deletion_journal(connection, restored_names)
+
+
+def discard_staged_files(
+    staged: list[tuple[Path, Path]], connection: sqlite3.Connection
+) -> None:
+    discarded_names: list[str] = []
+    for _, staged_path in staged:
+        try:
+            staged_path.unlink(missing_ok=True)
+            discarded_names.append(staged_path.name)
+        except OSError as error:
+            logger.warning(
+                "staged file cleanup failed: %s",
+                error,
+                extra={"event": "file_cleanup"},
+            )
+    clear_deletion_journal(connection, discarded_names)
+
+
+def clear_deletion_journal(
+    connection: sqlite3.Connection, staged_names: list[str]
+) -> None:
+    if not staged_names:
+        return
+    placeholders = ", ".join("?" for _ in staged_names)
+    try:
+        connection.execute(
+            f"DELETE FROM file_deletion_journal WHERE staged_name IN ({placeholders})",
+            staged_names,
+        )
+        connection.commit()
+    except sqlite3.Error as error:
+        connection.rollback()
+        logger.warning(
+            "deletion journal cleanup failed: %s",
+            error,
+            extra={"event": "file_cleanup"},
+        )
+
+
+def cleanup_staged_files(connection: sqlite3.Connection) -> None:
+    """Recover deletions interrupted before or after their database commit."""
+
+    root = uploads_path().resolve()
+    rows = connection.execute(
+        "SELECT staged_name, original_name FROM file_deletion_journal"
+    ).fetchall()
+    handled_names: list[str] = []
+    for row in rows:
+        staged_path = stored_file_path(row["staged_name"])
+        original_path = stored_file_path(row["original_name"])
+        if staged_path is None or original_path is None:
+            action = "discard"
+        else:
+            referenced = connection.execute(
+                "SELECT 1 FROM files WHERE filename = ? LIMIT 1",
+                (row["original_name"],),
+            ).fetchone() is not None
+            action = "restore" if referenced else "discard"
+        try:
+            if staged_path is not None and action == "restore" and staged_path.is_file():
+                if original_path is not None and not original_path.exists():
+                    staged_path.replace(original_path)
+                else:
+                    staged_path.unlink(missing_ok=True)
+            elif staged_path is not None and action == "discard":
+                staged_path.unlink(missing_ok=True)
+            if staged_path is None or not staged_path.exists():
+                handled_names.append(row["staged_name"])
+        except OSError as error:
+            logger.warning(
+                "staged file recovery failed: %s",
+                error,
+                extra={"event": "file_cleanup"},
+            )
+    clear_deletion_journal(connection, handled_names)
+
+    # Clean temporary files created by older versions that did not have a journal.
+    try:
+        journal_names = {
+            row["staged_name"]
+            for row in connection.execute(
+                "SELECT staged_name FROM file_deletion_journal"
+            ).fetchall()
+        }
+        for path in root.glob(".coursebox-deleting-*"):
+            if path.name in journal_names:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as error:
+                logger.warning(
+                    "orphaned staged file cleanup failed: %s",
+                    error,
+                    extra={"event": "file_cleanup"},
+                )
+    except OSError as error:
+        logger.warning(
+            "staged file recovery scan failed: %s",
+            error,
+            extra={"event": "file_cleanup"},
+        )
 
 
 def ensure_fts(connection: sqlite3.Connection) -> bool:

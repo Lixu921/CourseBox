@@ -6,41 +6,67 @@ from app.auth import hash_password
 
 
 class CourseCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    college: str | None = None
-    semester: str | None = None
+    name: str = Field(..., min_length=1, max_length=200)
+    college: str | None = Field(default=None, max_length=120)
+    semester: str | None = Field(default=None, max_length=80)
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
     def name_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("课程名称必须是文本")
         value = value.strip()
         if not value:
             raise ValueError("课程名称不能为空")
         return value
+
+    @field_validator("college", "semester", mode="before")
+    @classmethod
+    def optional_text_is_normalized(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("字段必须是文本")
+        value = value.strip()
+        return value or None
 
 
 class CourseUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1)
-    college: str | None = None
-    semester: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    college: str | None = Field(default=None, max_length=120)
+    semester: str | None = Field(default=None, max_length=80)
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
     def name_must_not_be_blank(cls, value: str | None) -> str | None:
         if value is None:
-            return None
+            raise ValueError("课程名称不能为空")
+        if not isinstance(value, str):
+            raise ValueError("课程名称必须是文本")
         value = value.strip()
         if not value:
             raise ValueError("课程名称不能为空")
         return value
 
+    @field_validator("college", "semester", mode="before")
+    @classmethod
+    def optional_text_is_normalized(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("字段必须是文本")
+        value = value.strip()
+        return value or None
+
 
 class FileUpdate(BaseModel):
-    title: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1, max_length=200)
 
-    @field_validator("title")
+    @field_validator("title", mode="before")
     @classmethod
     def title_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("资料标题必须是文本")
         value = value.strip()
         if not value:
             raise ValueError("资料标题不能为空")
@@ -54,6 +80,8 @@ class LoginRequest(BaseModel):
     @field_validator("username")
     @classmethod
     def username_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("用户名必须是文本")
         value = value.strip()
         if not value:
             raise ValueError("用户名不能为空")
@@ -68,6 +96,8 @@ class UserCreate(BaseModel):
     @field_validator("username")
     @classmethod
     def username_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("用户名必须是文本")
         value = value.strip()
         if not value:
             raise ValueError("用户名不能为空")
