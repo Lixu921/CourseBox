@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
-from app.api.files import download_router, router as files_router, search_router
+from app.api.files import download_router, search_router
+from app.api.files import router as files_router
 from app.config import database_path, get_settings, uploads_path
 from app.db import cleanup_staged_files, get_db, init_db
 
@@ -229,7 +230,8 @@ def check_database() -> dict:
         if quick_check != "ok":
             return {"status": "error", "message": "数据库完整性检查失败"}
         required = connection.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('courses', 'files')"
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('courses', 'files')"
         ).fetchone()[0]
         if required != 2:
             return {"status": "error", "message": "数据库结构未初始化"}

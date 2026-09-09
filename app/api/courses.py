@@ -12,7 +12,6 @@ from app.db import (
 )
 from app.schemas import Course, CourseCreate, CourseDetail, CoursePage, CourseUpdate
 
-
 router = APIRouter(tags=["课程"])
 
 

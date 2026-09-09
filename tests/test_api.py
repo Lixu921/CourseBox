@@ -370,7 +370,8 @@ def test_download_rejects_path_outside_upload_directory(tmp_path, monkeypatch):
     course = client.post("/接口/课程", json={"name": "课程"}).json()
     connection = sqlite3.connect(database)
     connection.execute(
-        "INSERT INTO files (course_id, title, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO files (course_id, title, filename, original_name, size) "
+        "VALUES (?, ?, ?, ?, ?)",
         (course["id"], "越界", "../outside.txt", "outside.txt", 1),
     )
     connection.commit()

@@ -1,10 +1,20 @@
+import hashlib
 import logging
 import sqlite3
-import hashlib
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
 from app.api.auth import optional_user, require_roles
@@ -17,7 +27,6 @@ from app.db import (
     stage_stored_files,
 )
 from app.schemas import FilePage, FileReview, FileUpdate
-
 
 router = APIRouter(tags=["资料"])
 logger = logging.getLogger("coursebox")
@@ -485,7 +494,8 @@ def search_files(
             OR LOWER(c.name) LIKE LOWER(?))
         """
         total = db.execute(
-            f"SELECT COUNT(*) FROM files AS f JOIN courses AS c ON c.id = f.course_id WHERE {where}",
+            "SELECT COUNT(*) FROM files AS f JOIN courses AS c ON c.id = f.course_id "
+            f"WHERE {where}",
             (pattern, pattern, pattern),
         ).fetchone()[0]
         rows = db.execute(

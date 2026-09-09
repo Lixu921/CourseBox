@@ -1,7 +1,6 @@
 import os
 import sqlite3
 
-
 path = os.environ["COURSEBOX_BACKUP_SOURCE"]
 connection = sqlite3.connect(path)
 try:

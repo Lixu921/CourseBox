@@ -4,7 +4,6 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
-
 PASSWORD_ITERATIONS = 310_000
 SESSION_TTL = timedelta(days=7)
 SESSION_COOKIE = "coursebox_session"

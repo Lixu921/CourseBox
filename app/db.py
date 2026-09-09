@@ -11,7 +11,6 @@ from app.config import (
     uploads_path,
 )
 
-
 # Kept as a compatibility alias for callers that imported the old constant.
 UPLOADS_PATH = uploads_path()
 logger = logging.getLogger("coursebox")
