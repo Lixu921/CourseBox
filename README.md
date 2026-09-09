@@ -77,7 +77,9 @@ Windows 也可以使用启动脚本：
 
 如果 Windows 的 `py` 或 `python` 命令被系统执行别名拦截，可先指定解释器：`$env:COURSEBOX_PYTHON = "C:\Python314\python.exe"`。
 
-启动服务后，可以打开[应用首页](http://127.0.0.1:8000/)和[接口文档](http://127.0.0.1:8000/%E6%8E%A5%E5%8F%A3%E6%96%87%E6%A1%A3)。如果需要让其他设备访问，请先阅读[部署说明](DEPLOY.md)。
+启动服务后，请在运行服务的电脑上访问本地地址：`http://127.0.0.1:8000/`。接口文档地址为 `http://127.0.0.1:8000/%E6%8E%A5%E5%8F%A3%E6%96%87%E6%A1%A3`。这两个地址只适用于本地运行，不能从 GitHub 页面直接访问。
+
+如果需要公网访问，可以[部署到 Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2FLixu921%2FCourseBox)，或先阅读[部署说明](DEPLOY.md)。部署完成后，请使用 Render 分配的 `onrender.com` 地址访问应用。
 
 网页和接口统一使用中文路径：课程页为 `/课程`，样式和脚本为 `/资源/样式.css`、`/资源/脚本.js`，课程接口为 `/接口/课程`，资料接口为 `/接口/课程/{编号}/资料`，下载地址为 `/接口/资料/{资料编号}/下载`，搜索接口为 `/接口/搜索?关键词=...`。课程和资料列表、搜索结果返回 `items`、`total`、`page`、`page_size` 和 `total_pages`，可用 `page` 与 `page_size` 分页。
 
