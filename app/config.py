@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,13 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MIN_FREE_SPACE = 100 * 1024 * 1024
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+DEFAULT_ENV = "development"
+PRODUCTION_ENVS = {"production", "prod"}
+MIN_ADMIN_PASSWORD_LENGTH = 8
+DEFAULT_LOGIN_MAX_ATTEMPTS = 5
+DEFAULT_LOGIN_LOCKOUT_SECONDS = 300
+
+logger = logging.getLogger("coursebox.config")
 
 # Keep the allowlist broad enough for ordinary course material while rejecting
 # executable formats by default.
@@ -115,6 +123,36 @@ def _extensions_from_env() -> set[str]:
     return extensions or DEFAULT_ALLOWED_EXTENSIONS.copy()
 
 
+def _bool_from_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _admin_password(is_production: bool) -> str:
+    """生产环境绝不回退到默认密码，配置缺失或过短一律拒绝启动。"""
+
+    configured = (os.getenv("COURSEBOX_ADMIN_PASSWORD") or "").strip()
+    if not configured:
+        if is_production:
+            raise RuntimeError(
+                "生产环境必须设置 COURSEBOX_ADMIN_PASSWORD"
+                f"（至少 {MIN_ADMIN_PASSWORD_LENGTH} 位），已拒绝启动。"
+            )
+        logger.warning(
+            "COURSEBOX_ADMIN_PASSWORD 未设置，开发环境暂用内置默认密码；"
+            "请勿在可被访问的环境中使用默认密码。",
+            extra={"event": "insecure_default_password"},
+        )
+        return DEFAULT_ADMIN_PASSWORD
+    if len(configured) < MIN_ADMIN_PASSWORD_LENGTH:
+        raise RuntimeError(
+            f"COURSEBOX_ADMIN_PASSWORD 至少需要 {MIN_ADMIN_PASSWORD_LENGTH} 位，已拒绝启动。"
+        )
+    return configured
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime configuration loaded from environment variables."""
@@ -129,6 +167,14 @@ class Settings:
     min_free_space: int
     host: str
     port: int
+    environment: str
+    cookie_secure: bool
+    login_max_attempts: int
+    login_lockout_seconds: int
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment in PRODUCTION_ENVS
 
 
 def get_settings() -> Settings:
@@ -140,22 +186,28 @@ def get_settings() -> Settings:
         os.getenv("COURSEBOX_ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME).strip()
         or DEFAULT_ADMIN_USERNAME
     )
-    admin_password = os.getenv(
-        "COURSEBOX_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD
-    )
-    if len(admin_password) < 8:
-        admin_password = DEFAULT_ADMIN_PASSWORD
+    environment = os.getenv("COURSEBOX_ENV", DEFAULT_ENV).strip().lower() or DEFAULT_ENV
+    is_production = environment in PRODUCTION_ENVS
     return Settings(
         database_path=_path_from_env("COURSEBOX_DB", DEFAULT_DB_PATH),
         uploads_path=_path_from_env("COURSEBOX_UPLOAD_DIR", DEFAULT_UPLOADS_PATH),
         max_file_size=_positive_int("COURSEBOX_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE),
         allowed_extensions=_extensions_from_env(),
         admin_username=admin_username,
-        admin_password=admin_password,
+        admin_password=_admin_password(is_production),
         log_level=log_level,
         min_free_space=_positive_int(
             "COURSEBOX_MIN_FREE_SPACE", DEFAULT_MIN_FREE_SPACE
         ),
         host=host,
         port=_positive_int("COURSEBOX_PORT", DEFAULT_PORT),
+        environment=environment,
+        # 局域网通常走 http，默认值随环境走，避免开发环境登录拿不到 Cookie。
+        cookie_secure=_bool_from_env("COURSEBOX_COOKIE_SECURE", is_production),
+        login_max_attempts=_positive_int(
+            "COURSEBOX_LOGIN_MAX_ATTEMPTS", DEFAULT_LOGIN_MAX_ATTEMPTS
+        ),
+        login_lockout_seconds=_positive_int(
+            "COURSEBOX_LOGIN_LOCKOUT_SECONDS", DEFAULT_LOGIN_LOCKOUT_SECONDS
+        ),
     )

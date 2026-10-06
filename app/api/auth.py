@@ -1,6 +1,6 @@
 import sqlite3
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 
 from app.auth import (
     SESSION_COOKIE,
@@ -8,7 +8,14 @@ from app.auth import (
     session_token_hash,
     verify_password,
 )
-from app.db import get_db, record_audit
+from app.config import get_settings
+from app.db import (
+    clear_login_failures,
+    get_db,
+    login_lock_remaining,
+    record_audit,
+    register_login_failure,
+)
 from app.schemas import LoginRequest, User, UserCreate
 
 router = APIRouter(tags=["账户"])
@@ -75,17 +82,46 @@ def require_roles(*roles: str):
     operation_id="登录",
 )
 def login(
-    request: LoginRequest,
+    credentials: LoginRequest,
+    request: Request,
     response: Response,
     db: sqlite3.Connection = Depends(get_db),
 ) -> User:
+    settings = get_settings()
+    # 反向代理后面拿到的可能是代理地址，但登录键同时包含用户名，按账号锁定仍然有效。
+    client_ip = request.client.host if request.client else "unknown"
+    username = credentials.username
+
+    remaining = login_lock_remaining(db, username, client_ip)
+    if remaining > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"登录尝试过于频繁，请在 {remaining} 秒后重试",
+        )
+
     row = db.execute(
         "SELECT id, username, password_hash, role FROM users WHERE username = ?",
-        (request.username,),
+        (username,),
     ).fetchone()
-    if row is None or not verify_password(request.password, row["password_hash"]):
+    if row is None or not verify_password(credentials.password, row["password_hash"]):
+        failed = register_login_failure(
+            db,
+            username,
+            client_ip,
+            settings.login_max_attempts,
+            settings.login_lockout_seconds,
+        )
+        if failed >= settings.login_max_attempts:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "登录失败次数过多，账户已被临时锁定"
+                    f" {settings.login_lockout_seconds} 秒"
+                ),
+            )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    clear_login_failures(db, username, client_ip)
     token, token_hash, expires_at = new_session_token()
     db.execute(
         "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
@@ -99,6 +135,7 @@ def login(
         max_age=7 * 24 * 60 * 60,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
         path="/",
     )
     return User(id=row["id"], username=row["username"], role=row["role"])

@@ -53,6 +53,9 @@ def configure_logging() -> None:
 
 configure_logging()
 
+# 配置错误（例如生产环境缺少管理员密码）必须在这里直接抛出，不能带着默认密码启动。
+get_settings()
+
 app = FastAPI(
     title="CourseBox 课盒子",
     docs_url="/接口文档",
@@ -116,6 +119,7 @@ def error_code(status_code: int) -> str:
         413: "payload_too_large",
         415: "unsupported_media_type",
         422: "validation_error",
+        429: "too_many_requests",
         500: "internal_error",
         503: "service_unavailable",
     }.get(status_code, "request_error")

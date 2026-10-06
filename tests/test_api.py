@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import unquote
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -887,3 +888,97 @@ def test_resource_governance_and_audit_logs(tmp_path, monkeypatch):
     }
     assert {"login", "create", "upload", "rejected", "approved", "download"} <= actions
     connection.close()
+
+
+def test_production_requires_explicit_admin_password(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("COURSEBOX_ENV", "production")
+    monkeypatch.delenv("COURSEBOX_ADMIN_PASSWORD", raising=False)
+    with pytest.raises(RuntimeError, match="COURSEBOX_ADMIN_PASSWORD"):
+        get_settings()
+
+    monkeypatch.setenv("COURSEBOX_ADMIN_PASSWORD", "short")
+    with pytest.raises(RuntimeError, match="至少"):
+        get_settings()
+
+    monkeypatch.setenv("COURSEBOX_ADMIN_PASSWORD", "a-long-enough-password")
+    settings = get_settings()
+    assert settings.is_production is True
+    assert settings.cookie_secure is True
+
+
+def test_development_falls_back_to_default_password(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("COURSEBOX_ENV", "development")
+    monkeypatch.delenv("COURSEBOX_ADMIN_PASSWORD", raising=False)
+    settings = get_settings()
+
+    assert settings.admin_password == "admin12345"
+    assert settings.is_production is False
+    # 局域网通常是 http，开发环境默认不加 Secure，否则浏览器不回传 Cookie。
+    assert settings.cookie_secure is False
+
+
+def test_login_cookie_respects_secure_setting(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_COOKIE_SECURE", "true")
+
+    from app.db import init_db
+
+    init_db()
+    response = client.post(
+        "/接口/登录", json={"username": "admin", "password": "admin12345"}
+    )
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+
+
+def test_login_lockout_after_repeated_failures(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_LOGIN_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("COURSEBOX_LOGIN_LOCKOUT_SECONDS", "60")
+
+    from app.db import init_db
+
+    init_db()
+    wrong = {"username": "admin", "password": "wrong-pass"}
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+
+    locked = client.post("/接口/登录", json=wrong)
+    assert locked.status_code == 429
+    assert locked.json()["error"]["code"] == "too_many_requests"
+
+    # 锁定期间即使密码正确也要被挡下。
+    blocked = client.post(
+        "/接口/登录", json={"username": "admin", "password": "admin12345"}
+    )
+    assert blocked.status_code == 429
+
+
+def test_login_success_clears_failure_counter(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_LOGIN_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("COURSEBOX_LOGIN_LOCKOUT_SECONDS", "60")
+
+    from app.db import init_db
+
+    init_db()
+    wrong = {"username": "admin", "password": "wrong-pass"}
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+
+    assert login_user(client, "admin", "admin12345")["role"] == "admin"
+
+    # 计数已清零，重新失败两次仍然只是 401 而不是锁定。
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+    assert client.post("/接口/登录", json=wrong).status_code == 401
+    assert client.post("/接口/登录", json=wrong).status_code == 429

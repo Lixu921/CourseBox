@@ -82,6 +82,15 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 original_name TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                username TEXT NOT NULL,
+                client_ip TEXT NOT NULL,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (username, client_ip)
+            );
             """
         )
         migrate_files_table(connection)
@@ -98,6 +107,8 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_login_attempts_locked_until
+                ON login_attempts(locked_until);
             """
         )
         ensure_fts(connection)
@@ -167,6 +178,89 @@ def record_audit(
         """,
         (actor_id, action, entity_type, entity_id, detail),
     )
+
+
+def login_lock_remaining(
+    connection: sqlite3.Connection, username: str, client_ip: str
+) -> int:
+    """返回当前登录键剩余锁定秒数，未锁定返回 0。"""
+
+    row = connection.execute(
+        """
+        SELECT CAST(
+                   strftime('%s', locked_until) - strftime('%s', 'now') AS INTEGER
+               ) AS remaining
+        FROM login_attempts
+        WHERE username = ? AND client_ip = ?
+          AND locked_until IS NOT NULL AND locked_until > CURRENT_TIMESTAMP
+        """,
+        (username, client_ip),
+    ).fetchone()
+    if row is None or row["remaining"] is None:
+        return 0
+    return max(int(row["remaining"]), 0)
+
+
+def register_login_failure(
+    connection: sqlite3.Connection,
+    username: str,
+    client_ip: str,
+    max_attempts: int,
+    lockout_seconds: int,
+) -> int:
+    """累计一次失败；达到阈值时写入锁定时长，返回当前失败次数。"""
+
+    connection.execute(
+        """
+        INSERT INTO login_attempts (username, client_ip, failed_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(username, client_ip) DO UPDATE SET
+            failed_count = failed_count + 1,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (username, client_ip),
+    )
+    row = connection.execute(
+        "SELECT failed_count FROM login_attempts WHERE username = ? AND client_ip = ?",
+        (username, client_ip),
+    ).fetchone()
+    failed_count = int(row["failed_count"]) if row is not None else 1
+    if failed_count >= max_attempts:
+        connection.execute(
+            """
+            UPDATE login_attempts
+            SET locked_until = datetime('now', ?)
+            WHERE username = ? AND client_ip = ?
+            """,
+            (f"+{lockout_seconds} seconds", username, client_ip),
+        )
+    connection.commit()
+    return failed_count
+
+
+def clear_login_failures(
+    connection: sqlite3.Connection, username: str, client_ip: str
+) -> None:
+    connection.execute(
+        "DELETE FROM login_attempts WHERE username = ? AND client_ip = ?",
+        (username, client_ip),
+    )
+    connection.commit()
+
+
+def purge_login_attempts(connection: sqlite3.Connection, keep_seconds: int) -> int:
+    """清理已解锁且长期未活动的登录记录，避免表无限增长。"""
+
+    cursor = connection.execute(
+        """
+        DELETE FROM login_attempts
+        WHERE (locked_until IS NULL OR locked_until <= CURRENT_TIMESTAMP)
+          AND updated_at < datetime('now', ?)
+        """,
+        (f"-{keep_seconds} seconds",),
+    )
+    connection.commit()
+    return cursor.rowcount or 0
 
 
 def stored_file_path(filename: str) -> Path | None:

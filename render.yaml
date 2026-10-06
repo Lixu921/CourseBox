@@ -7,6 +7,8 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
+      - key: COURSEBOX_ENV
+        value: production
       - key: COURSEBOX_ADMIN_USERNAME
         value: admin
       - key: COURSEBOX_ADMIN_PASSWORD
