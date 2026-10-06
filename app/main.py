@@ -20,6 +20,7 @@ from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router
 from app.api.files import router as files_router
+from app.api.users import router as users_router
 from app.config import database_path, get_settings, uploads_path
 from app.db import (
     LOGIN_ATTEMPT_RETENTION_SECONDS,
@@ -85,6 +86,7 @@ app.include_router(files_router)
 app.include_router(download_router)
 app.include_router(search_router)
 app.include_router(auth_router)
+app.include_router(users_router)
 
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -345,6 +347,10 @@ def localized_openapi():
         "LoginRequest": "登录请求",
         "UserCreate": "用户创建请求",
         "User": "用户",
+        "UserAdmin": "用户详情",
+        "UserUpdate": "用户更新请求",
+        "UserPage": "用户分页响应",
+        "PasswordReset": "重置密码请求",
         "FileReview": "资料审核请求",
         "PageInfo": "分页信息",
         "CoursePage": "课程分页响应",
@@ -399,6 +405,9 @@ def localized_openapi():
                 "username": "用户名",
                 "password": "密码",
                 "role": "角色",
+                "is_active": "是否启用",
+                "created_at": "创建时间",
+                "upload_count": "上传资料数",
                 "status": "状态",
                 "uploaded_by": "上传者",
                 "mime_type": "MIME 类型",

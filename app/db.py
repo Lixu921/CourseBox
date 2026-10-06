@@ -96,6 +96,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             """
         )
         migrate_files_table(connection)
+        migrate_users_table(connection)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_courses_name ON courses(name);
@@ -154,6 +155,16 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def migrate_users_table(connection: sqlite3.Connection) -> None:
+    """老库补上启用状态列，历史账号默认保持可用。"""
+
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+    if "is_active" not in columns:
+        connection.execute(
+            "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+        )
+
+
 def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:
     if connection.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None:
         return
@@ -163,7 +174,6 @@ def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
         (bootstrap_admin_username(), hash_password(bootstrap_admin_password())),
     )
-
 
 def record_audit(
     connection: sqlite3.Connection,

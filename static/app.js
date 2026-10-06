@@ -28,6 +28,14 @@ const loginMessage = document.querySelector("#login-message");
 const adminCoursePanel = document.querySelector("#admin-course-panel");
 const courseCreateForm = document.querySelector("#course-create-form");
 const courseCreateMessage = document.querySelector("#course-create-message");
+const adminUserPanel = document.querySelector("#admin-user-panel");
+const userCreateForm = document.querySelector("#user-create-form");
+const userCreateMessage = document.querySelector("#user-create-message");
+const userList = document.querySelector("#user-list");
+const userPagination = document.querySelector("#user-pagination");
+const userFilterKeyword = document.querySelector("#user-filter-keyword");
+const userFilterRole = document.querySelector("#user-filter-role");
+const userFilterButton = document.querySelector("#user-filter-button");
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
@@ -36,6 +44,7 @@ let currentUser = null;
 let currentCourse = null;
 let currentCourseId = null;
 let currentFilePage = 1;
+let currentUserPage = 1;
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -89,8 +98,17 @@ function updateAuthUI() {
   logoutButton.hidden = !currentUser;
   if (loginPanel && currentUser) loginPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
+  if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
+  ensureUserPanelLoaded();
+}
+
+function ensureUserPanelLoaded() {
+  if (!adminUserPanel || currentUser?.role !== "admin") return;
+  if (adminUserPanel.dataset.loaded === "1") return;
+  adminUserPanel.dataset.loaded = "1";
+  loadUsers(1);
 }
 
 async function loadCurrentUser() {
@@ -594,6 +612,178 @@ async function createCourse(event) {
   }
 }
 
+function userQuery(page) {
+  const params = new URLSearchParams({ page: String(page), page_size: "10" });
+  const keyword = userFilterKeyword.value.trim();
+  if (keyword) params.set("关键词", keyword);
+  if (userFilterRole.value) params.set("角色", userFilterRole.value);
+  return params;
+}
+
+async function loadUsers(page = 1) {
+  if (!userList) return;
+  currentUserPage = page;
+  showState(userList, "正在加载用户...");
+  userPagination.innerHTML = "";
+  try {
+    const response = await fetch(`/api/users?${userQuery(page)}`);
+    if (!response.ok) throw new Error(await readError(response, "用户列表加载失败。"));
+    renderUsers(await response.json());
+  } catch (error) {
+    showState(userList, error.message || "用户列表加载失败。", true);
+    userPagination.innerHTML = "";
+  }
+}
+
+function renderUsers(data) {
+  const users = data.items || [];
+  userList.innerHTML = "";
+  if (!users.length) {
+    showState(userList, "没有匹配的用户");
+    renderPagination(userPagination, null, () => {});
+    return;
+  }
+  users.forEach((item) => userList.append(renderUserRow(item)));
+  renderPagination(userPagination, data, (page) => loadUsers(page));
+}
+
+function renderUserRow(item) {
+  const isSelf = item.id === currentUser?.id;
+  const row = document.createElement("li");
+  row.className = "user-row";
+
+  const identity = document.createElement("div");
+  identity.className = "user-identity";
+  const title = document.createElement("h3");
+  title.textContent = item.username;
+  if (isSelf) {
+    const selfTag = document.createElement("span");
+    selfTag.className = "user-self-tag";
+    selfTag.textContent = "当前账户";
+    title.append(" ", selfTag);
+  }
+  const stateBadge = document.createElement("span");
+  stateBadge.className = `status-badge ${item.is_active ? "status-approved" : "status-inactive"}`;
+  stateBadge.textContent = item.is_active ? "已启用" : "已停用";
+  title.append(" ", stateBadge);
+  const meta = document.createElement("p");
+  meta.className = "user-meta";
+  const created = item.created_at ? ` · 创建于 ${item.created_at}` : "";
+  meta.textContent = `角色：${ROLE_LABELS[item.role] || item.role} · 上传 ${item.upload_count} 份资料${created}`;
+  identity.append(title, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "user-actions";
+
+  const roleSelect = document.createElement("select");
+  Object.entries(ROLE_LABELS).forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === item.role;
+    roleSelect.append(option);
+  });
+  roleSelect.disabled = isSelf;
+  if (isSelf) roleSelect.title = "不能修改自己的角色";
+  roleSelect.setAttribute("aria-label", `${item.username} 的角色`);
+  roleSelect.addEventListener("change", () => changeUserRole(item, roleSelect));
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = item.is_active ? "text-button danger-button" : "text-button";
+  toggle.textContent = item.is_active ? "停用" : "启用";
+  toggle.disabled = isSelf && item.is_active;
+  if (toggle.disabled) toggle.title = "不能停用当前登录的账户";
+  toggle.addEventListener("click", () => toggleUserActive(item));
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "text-button";
+  reset.textContent = "重置密码";
+  reset.addEventListener("click", () => resetUserPassword(item));
+
+  actions.append(roleSelect, toggle, reset);
+  row.append(identity, actions);
+  return row;
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  userCreateMessage.textContent = "正在创建...";
+  userCreateMessage.className = "form-message";
+  const submitButton = userCreateForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  try {
+    const response = await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(userCreateForm))),
+    });
+    if (!response.ok) throw new Error(await readError(response, "用户创建失败。"));
+    userCreateForm.reset();
+    userCreateMessage.textContent = "用户创建成功。";
+    userCreateMessage.className = "form-message success-message";
+    await loadUsers(1);
+  } catch (error) {
+    userCreateMessage.textContent = error.message || "用户创建失败。";
+    userCreateMessage.className = "form-message error-message";
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
+async function patchUser(item, payload, fallback) {
+  const response = await fetch(`/api/users/${encodeURIComponent(item.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, fallback));
+    return false;
+  }
+  await loadUsers(currentUserPage);
+  return true;
+}
+
+async function changeUserRole(item, select) {
+  const role = select.value;
+  if (role === item.role) return;
+  const label = ROLE_LABELS[role] || role;
+  if (!window.confirm(`确定把“${item.username}”的角色改为${label}吗？`)) {
+    select.value = item.role;
+    return;
+  }
+  if (!(await patchUser(item, { role }, "角色修改失败。"))) select.value = item.role;
+}
+
+async function toggleUserActive(item) {
+  const action = item.is_active ? "停用" : "启用";
+  const extra = item.is_active ? "，该用户已登录的会话会立即失效" : "";
+  if (!window.confirm(`确定${action}“${item.username}”吗？${extra}`)) return;
+  await patchUser(item, { is_active: !item.is_active }, `${action}失败。`);
+}
+
+async function resetUserPassword(item) {
+  const password = window.prompt(`请输入“${item.username}”的新密码（至少 8 位）`);
+  if (password === null) return;
+  if (password.length < 8) {
+    window.alert("新密码至少需要 8 位。");
+    return;
+  }
+  const response = await fetch(`/api/users/${encodeURIComponent(item.id)}/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "密码重置失败。"));
+    return;
+  }
+  userCreateMessage.textContent = `已重置“${item.username}”的密码，该用户需要重新登录。`;
+  userCreateMessage.className = "form-message success-message";
+}
+
 function readError(response, fallback) {
   return response.json()
     .then((body) => body.error?.message || body.detail || fallback)
@@ -619,6 +809,14 @@ function initHomePage() {
     }
   });
   courseCreateForm?.addEventListener("submit", createCourse);
+  userCreateForm?.addEventListener("submit", createUser);
+  userFilterButton?.addEventListener("click", () => loadUsers(1));
+  userFilterRole?.addEventListener("change", () => loadUsers(1));
+  userFilterKeyword?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadUsers(1);
+  });
   const params = new URLSearchParams(window.location.search);
   const query = (params.get("q") || params.get("关键词"))?.trim();
   if (query) {

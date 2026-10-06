@@ -72,6 +72,48 @@
         <p id="course-create-message" class="form-message" role="status" aria-live="polite"></p>
       </form>
     </section>
+    <section id="admin-user-panel" class="admin-panel" hidden aria-labelledby="admin-user-heading">
+      <div class="section-heading">
+        <h2 id="admin-user-heading">用户管理</h2>
+        <span class="muted">管理员</span>
+      </div>
+      <form id="user-create-form" class="user-create-form">
+        <div class="form-field">
+          <label for="user-create-username">用户名</label>
+          <input id="user-create-username" name="username" type="text" minlength="3" maxlength="80" autocomplete="off" required>
+        </div>
+        <div class="form-field">
+          <label for="user-create-password">初始密码</label>
+          <input id="user-create-password" name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required>
+        </div>
+        <div class="form-field">
+          <label for="user-create-role">角色</label>
+          <select id="user-create-role" name="role">
+            <option value="viewer">浏览者</option>
+            <option value="uploader">上传者</option>
+            <option value="admin">管理员</option>
+          </select>
+        </div>
+        <button class="primary-button compact-button" type="submit">创建用户</button>
+        <p id="user-create-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+      <div class="user-toolbar">
+        <label class="sr-only" for="user-filter-keyword">按用户名筛选</label>
+        <input id="user-filter-keyword" type="search" placeholder="按用户名筛选" autocomplete="off">
+        <label class="sr-only" for="user-filter-role">按角色筛选</label>
+        <select id="user-filter-role">
+          <option value="">全部角色</option>
+          <option value="admin">管理员</option>
+          <option value="uploader">上传者</option>
+          <option value="viewer">浏览者</option>
+        </select>
+        <button id="user-filter-button" class="text-button" type="button">筛选</button>
+      </div>
+      <ul id="user-list" class="user-list" aria-live="polite">
+        <li class="state-message">正在加载用户...</li>
+      </ul>
+      <nav id="user-pagination" class="pagination" aria-label="用户分页"></nav>
+    </section>
     <section aria-labelledby="course-heading">
       <div class="section-heading">
         <h2 id="course-heading">全部课程</h2>

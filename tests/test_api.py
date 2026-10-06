@@ -84,6 +84,8 @@ def test_pages_are_available():
     assert 'src="/static/app.js"' in homepage.text
     assert 'id="login-form"' in homepage.text
     assert 'id="admin-course-panel"' in homepage.text
+    assert 'id="admin-user-panel"' in homepage.text
+    assert 'id="user-list"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
     assert 'href="#top"' in homepage.text
@@ -1250,3 +1252,204 @@ def test_maintenance_module_runs(tmp_path, monkeypatch, capsys):
 
     assert maintenance.main() == 0
     assert "已清理 1 条" in capsys.readouterr().out
+
+
+def test_admin_user_management(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    admin = login_user(client, "admin", "admin12345")
+
+    assert client.post(
+        "/接口/用户",
+        json={"username": "helper", "password": "helper-pass", "role": "uploader"},
+    ).status_code == 201
+
+    listing = client.get("/接口/用户")
+    assert listing.status_code == 200
+    body = listing.json()
+    assert body["total"] == 2
+    assert [item["username"] for item in body["items"]] == ["admin", "helper"]
+    helper = body["items"][1]
+    assert helper["role"] == "uploader"
+    assert helper["is_active"] is True
+    assert helper["upload_count"] == 0
+    assert helper["created_at"]
+
+    # 关键词与角色筛选。
+    filtered = client.get("/接口/用户", params={"关键词": "help"}).json()
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["username"] == "helper"
+    assert client.get("/接口/用户", params={"角色": "admin"}).json()["total"] == 1
+    assert client.get("/接口/用户", params={"角色": "viewer"}).json()["total"] == 0
+
+    # 改角色。
+    promoted = client.patch(
+        f"/接口/用户/{helper['id']}", json={"role": "viewer"}
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["role"] == "viewer"
+
+    # 空请求体没有可改的字段。
+    assert client.patch(f"/接口/用户/{helper['id']}", json={}).status_code == 422
+    assert client.patch("/接口/用户/99999", json={"role": "viewer"}).status_code == 404
+
+    # 不能改自己的角色，也不能停用自己。
+    assert client.patch(
+        f"/接口/用户/{admin['id']}", json={"role": "viewer"}
+    ).status_code == 409
+    assert client.patch(
+        f"/接口/用户/{admin['id']}", json={"is_active": False}
+    ).status_code == 409
+    assert client.get("/接口/当前用户").json()["role"] == "admin"
+
+
+def test_last_active_admin_is_protected(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_user(client, "admin", "admin12345")
+    second = client.post(
+        "/接口/用户",
+        json={"username": "admin2", "password": "admin2-pass", "role": "admin"},
+    ).json()
+
+    # 有两个启用的管理员时可以停用其中一个。
+    assert client.patch(
+        f"/接口/用户/{second['id']}", json={"is_active": False}
+    ).status_code == 200
+    assert client.get("/接口/用户", params={"启用": True}).json()["total"] == 1
+
+    # 只剩一个启用管理员后，降权与停用都要被拒绝。
+    assert client.patch(
+        f"/接口/用户/{second['id']}", json={"role": "viewer"}
+    ).status_code == 200
+    assert client.get("/接口/用户", params={"角色": "admin"}).json()["total"] == 1
+    assert client.get("/接口/用户", params={"启用": False}).json()["total"] == 1
+
+    second_admin = client.post(
+        "/接口/用户",
+        json={"username": "admin3", "password": "admin3-pass", "role": "admin"},
+    ).json()
+    assert client.patch(
+        f"/接口/用户/{second_admin['id']}", json={"is_active": False}
+    ).status_code == 200
+    assert client.patch(
+        f"/接口/用户/{second_admin['id']}", json={"role": "viewer"}
+    ).status_code == 200
+
+
+def test_disabled_user_cannot_login_and_sessions_are_revoked(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    created = client.post(
+        "/接口/用户",
+        json={"username": "temp", "password": "temp-pass", "role": "uploader"},
+    ).json()
+
+    worker = create_client()
+    login_user(worker, "temp", "temp-pass")
+    assert worker.get("/接口/当前用户").status_code == 200
+
+    assert client.patch(
+        f"/接口/用户/{created['id']}", json={"is_active": False}
+    ).json()["is_active"] is False
+
+    # 已登录会话立即失效。
+    assert worker.get("/接口/当前用户").status_code == 401
+    # 重新登录被拒绝，且提示是停用而不是密码错误。
+    retry = worker.post(
+        "/接口/登录", json={"username": "temp", "password": "temp-pass"}
+    )
+    assert retry.status_code == 403
+    assert "停用" in retry.json()["error"]["message"]
+
+    # 重新启用后可以登录。
+    assert client.patch(
+        f"/接口/用户/{created['id']}", json={"is_active": True}
+    ).json()["is_active"] is True
+    assert worker.post(
+        "/接口/登录", json={"username": "temp", "password": "temp-pass"}
+    ).status_code == 200
+
+
+def test_admin_resets_user_password(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    created = client.post(
+        "/接口/用户",
+        json={"username": "resetme", "password": "old-password", "role": "viewer"},
+    ).json()
+
+    worker = create_client()
+    login_user(worker, "resetme", "old-password")
+
+    assert client.post(
+        f"/接口/用户/{created['id']}/重置密码", json={"password": "short"}
+    ).status_code == 422
+    assert client.post(
+        f"/接口/用户/{created['id']}/重置密码", json={"password": "new-password"}
+    ).status_code == 204
+    assert client.post(
+        "/接口/用户/99999/重置密码", json={"password": "new-password"}
+    ).status_code == 404
+
+    # 旧会话作废，旧密码失效，新密码可用。
+    assert worker.get("/接口/当前用户").status_code == 401
+    assert worker.post(
+        "/接口/登录", json={"username": "resetme", "password": "old-password"}
+    ).status_code == 401
+    assert worker.post(
+        "/接口/登录", json={"username": "resetme", "password": "new-password"}
+    ).status_code == 200
+
+
+def test_non_admin_cannot_manage_users(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    created = client.post(
+        "/接口/用户",
+        json={"username": "plain", "password": "plain-pass", "role": "uploader"},
+    ).json()
+
+    worker = create_client()
+    login_user(worker, "plain", "plain-pass")
+
+    assert worker.get("/接口/用户").status_code == 403
+    assert worker.patch(
+        f"/接口/用户/{created['id']}", json={"role": "admin"}
+    ).status_code == 403
+    assert worker.post(
+        f"/接口/用户/{created['id']}/重置密码", json={"password": "another-pass"}
+    ).status_code == 403
+    assert worker.post(
+        "/接口/用户",
+        json={"username": "sneaky", "password": "sneaky-pass", "role": "admin"},
+    ).status_code == 403
+    assert client.get("/接口/用户", params={"关键词": "sneaky"}).json()["total"] == 0

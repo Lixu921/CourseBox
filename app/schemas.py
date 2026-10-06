@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth import hash_password
 
@@ -113,6 +113,29 @@ class User(BaseModel):
     role: Literal["admin", "uploader", "viewer"]
 
 
+class UserAdmin(User):
+    """管理员视角的用户信息，比公开的 User 多出启用状态与统计字段。"""
+
+    is_active: bool = True
+    created_at: str | None = None
+    upload_count: int = 0
+
+
+class UserUpdate(BaseModel):
+    role: Literal["admin", "uploader", "viewer"] | None = None
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_change(self) -> "UserUpdate":
+        if self.role is None and self.is_active is None:
+            raise ValueError("至少要修改角色或启用状态")
+        return self
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(..., min_length=8, max_length=200)
+
+
 class FileReview(BaseModel):
     status: Literal["approved", "rejected"]
 
@@ -141,3 +164,7 @@ class CoursePage(PageInfo):
 
 class FilePage(PageInfo):
     items: list[dict]
+
+
+class UserPage(PageInfo):
+    items: list[UserAdmin]

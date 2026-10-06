@@ -16,7 +16,7 @@ from app.db import (
     record_audit,
     register_login_failure,
 )
-from app.schemas import LoginRequest, User, UserCreate
+from app.schemas import LoginRequest, User
 
 router = APIRouter(tags=["账户"])
 
@@ -36,6 +36,7 @@ def find_session_user(
         FROM sessions AS s
         JOIN users AS u ON u.id = s.user_id
         WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
+          AND u.is_active = 1
         """,
         (session_token_hash(session_cookie),),
     ).fetchone()
@@ -100,7 +101,7 @@ def login(
         )
 
     row = db.execute(
-        "SELECT id, username, password_hash, role FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, role, is_active FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if row is None or not verify_password(credentials.password, row["password_hash"]):
@@ -120,6 +121,10 @@ def login(
                 ),
             )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    # 先校验口令再判断启用状态，避免匿名探测出哪些账户被停用。
+    if not row["is_active"]:
+        raise HTTPException(status_code=403, detail="账户已被停用，请联系管理员")
 
     clear_login_failures(db, username, client_ip)
     token, token_hash, expires_at = new_session_token()
@@ -181,45 +186,3 @@ def logout(
         record_audit(db, user["id"], "logout", "user", user["id"], "用户退出登录")
     db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
-
-
-@router.post(
-    "/api/users",
-    include_in_schema=False,
-    status_code=status.HTTP_201_CREATED,
-)
-@router.post(
-    "/接口/用户",
-    response_model=User,
-    status_code=status.HTTP_201_CREATED,
-    summary="管理员创建用户",
-    operation_id="管理员创建用户",
-)
-def create_user(
-    request: UserCreate,
-    user: sqlite3.Row = Depends(require_roles("admin")),
-    db: sqlite3.Connection = Depends(get_db),
-) -> User:
-    try:
-        cursor = db.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (request.username, request.password_hash(), request.role),
-        )
-        record_audit(
-            db,
-            user["id"],
-            "create",
-            "user",
-            cursor.lastrowid,
-            f"创建用户 {request.username}",
-        )
-        db.commit()
-    except sqlite3.IntegrityError as error:
-        db.rollback()
-        if "username" in str(error).lower():
-            raise HTTPException(status_code=409, detail="用户名已存在") from error
-        raise
-    row = db.execute(
-        "SELECT id, username, role FROM users WHERE id = ?", (cursor.lastrowid,)
-    ).fetchone()
-    return public_user(row)
