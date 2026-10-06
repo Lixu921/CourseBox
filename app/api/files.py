@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     APIRouter,
@@ -18,7 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from app.api.auth import optional_user, require_roles
+from app.api.auth import current_user, optional_user, require_roles
 from app.config import PROJECT_ROOT, allowed_extensions, get_settings, uploads_path
 from app.db import (
     discard_staged_files,
@@ -519,6 +520,49 @@ def download_file(
         path,
         filename=row["original_name"],
         media_type=row["mime_type"] or "application/octet-stream",
+    )
+
+
+@router.get("/api/my-files", include_in_schema=False)
+@router.get(
+    "/接口/我的资料",
+    response_model=FilePage,
+    summary="查看我的上传",
+    operation_id="查看我的上传",
+)
+def list_my_files(
+    状态: Literal["pending", "approved", "rejected"] | None = Query(
+        None, description="按审核状态筛选"
+    ),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    user: sqlite3.Row = Depends(current_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> FilePage:
+    conditions = ["f.uploaded_by = ?"]
+    params: list[object] = [user["id"]]
+    if 状态 is not None:
+        conditions.append("f.status = ?")
+        params.append(状态)
+    where = " AND ".join(conditions)
+
+    total = db.execute(
+        f"SELECT COUNT(*) FROM files AS f WHERE {where}",  # noqa: S608 - 条件由内部白名单拼接
+        params,
+    ).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
+               f.mime_type, f.sha256, f.status, f.uploaded_by,
+               c.name AS course_name, c.college, c.semester, f.filename
+        FROM files AS f JOIN courses AS c ON c.id = f.course_id
+        WHERE {where}
+        ORDER BY f.id DESC LIMIT ? OFFSET ?
+        """,  # noqa: S608 - 条件由内部白名单拼接
+        (*params, page_size, (page - 1) * page_size),
+    ).fetchall()
+    return FilePage(
+        **page_response([search_response(row) for row in rows], total, page, page_size)
     )
 
 

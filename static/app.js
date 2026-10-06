@@ -36,6 +36,12 @@ const userPagination = document.querySelector("#user-pagination");
 const userFilterKeyword = document.querySelector("#user-filter-keyword");
 const userFilterRole = document.querySelector("#user-filter-role");
 const userFilterButton = document.querySelector("#user-filter-button");
+const myUploadsPanel = document.querySelector("#my-uploads-panel");
+const myUploadsList = document.querySelector("#my-uploads-list");
+const myUploadsCount = document.querySelector("#my-uploads-count");
+const myUploadsPagination = document.querySelector("#my-uploads-pagination");
+const myUploadsStatus = document.querySelector("#my-uploads-status");
+const myUploadsRefreshButton = document.querySelector("#my-uploads-refresh");
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
@@ -45,6 +51,7 @@ let currentCourse = null;
 let currentCourseId = null;
 let currentFilePage = 1;
 let currentUserPage = 1;
+let currentMyUploadPage = 1;
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -99,9 +106,11 @@ function updateAuthUI() {
   if (loginPanel && currentUser) loginPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
+  if (myUploadsPanel) myUploadsPanel.hidden = !currentUser;
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
   ensureUserPanelLoaded();
+  ensureMyUploadsLoaded();
 }
 
 function ensureUserPanelLoaded() {
@@ -109,6 +118,19 @@ function ensureUserPanelLoaded() {
   if (adminUserPanel.dataset.loaded === "1") return;
   adminUserPanel.dataset.loaded = "1";
   loadUsers(1);
+}
+
+function ensureMyUploadsLoaded() {
+  if (!myUploadsPanel || !currentUser) return;
+  if (myUploadsPanel.dataset.loaded === "1") return;
+  myUploadsPanel.dataset.loaded = "1";
+  loadMyUploads(1);
+}
+
+// 切换账户时必须丢掉上一个账户的加载标记，否则会沿用旧列表。
+function resetPanelLoadFlags() {
+  adminUserPanel?.removeAttribute("data-loaded");
+  myUploadsPanel?.removeAttribute("data-loaded");
 }
 
 async function loadCurrentUser() {
@@ -144,6 +166,7 @@ async function submitLogin(event) {
     loginForm.reset();
     loginMessage.textContent = "登录成功。";
     loginMessage.className = "form-message success-message";
+    resetPanelLoadFlags();
     updateAuthUI();
     if (currentCourseId) await loadCourseFiles(currentCourseId, currentFilePage);
   } catch (error) {
@@ -160,6 +183,7 @@ async function logout() {
     await fetch("/api/logout", { method: "POST" });
   } finally {
     currentUser = null;
+    resetPanelLoadFlags();
     updateAuthUI();
     if (currentCourseId) await loadCourseFiles(currentCourseId, currentFilePage);
     logoutButton.disabled = false;
@@ -566,6 +590,7 @@ function uploadFile(courseId, event) {
     uploadMessage.className = "form-message success-message";
     await loadCourseFiles(courseId, 1);
     await refreshCourse();
+    await loadMyUploads(1);
     finishUpload(false);
   });
   request.addEventListener("error", () => {
@@ -784,6 +809,109 @@ async function resetUserPassword(item) {
   userCreateMessage.className = "form-message success-message";
 }
 
+async function loadMyUploads(page = 1) {
+  if (!myUploadsList) return;
+  currentMyUploadPage = page;
+  showState(myUploadsList, "正在加载...");
+  myUploadsCount.textContent = "";
+  myUploadsPagination.innerHTML = "";
+  const params = new URLSearchParams({ page: String(page), page_size: "10" });
+  if (myUploadsStatus.value) params.set("状态", myUploadsStatus.value);
+  try {
+    const response = await fetch(`/api/my-files?${params}`);
+    if (!response.ok) throw new Error(await readError(response, "我的上传加载失败。"));
+    renderMyUploads(await response.json());
+  } catch (error) {
+    showState(myUploadsList, error.message || "我的上传加载失败。", true);
+  }
+}
+
+function renderMyUploads(data) {
+  const files = data.items || [];
+  myUploadsList.innerHTML = "";
+  myUploadsCount.textContent = `${data.total} 份`;
+  if (!files.length) {
+    showState(myUploadsList, "还没有上传记录，去课程页上传第一份资料吧。");
+    renderPagination(myUploadsPagination, null, () => {});
+    return;
+  }
+  files.forEach((file) => myUploadsList.append(renderMyUploadRow(file)));
+  renderPagination(myUploadsPagination, data, (page) => loadMyUploads(page));
+}
+
+function renderMyUploadRow(file) {
+  const item = document.createElement("li");
+  item.className = "file-row";
+
+  const details = document.createElement("div");
+  details.className = "file-details";
+  const titleLine = document.createElement("div");
+  titleLine.className = "file-title-line";
+  const title = document.createElement("h3");
+  title.textContent = file.title;
+  titleLine.append(title, statusBadge(file.status));
+  const metadata = document.createElement("p");
+  metadata.className = "file-meta";
+  metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatUploadTime(file.upload_time)}`;
+  const course = document.createElement("p");
+  course.className = "file-meta";
+  course.textContent = `所属课程：${file.course?.name || "未知课程"}`;
+  details.append(titleLine, metadata, course);
+
+  const actions = document.createElement("div");
+  actions.className = "file-actions";
+  if (file.status !== "approved") {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "text-button";
+    edit.textContent = "编辑标题";
+    edit.addEventListener("click", () => editMyUpload(file));
+    const withdraw = document.createElement("button");
+    withdraw.type = "button";
+    withdraw.className = "text-button danger-button";
+    withdraw.textContent = file.status === "pending" ? "撤回" : "删除";
+    withdraw.addEventListener("click", () => withdrawMyUpload(file));
+    actions.append(edit, withdraw);
+  }
+  const download = document.createElement("a");
+  download.className = "download-link";
+  download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+  download.textContent = "下载";
+  download.setAttribute("download", "");
+  actions.append(download);
+
+  item.append(details, actions);
+  return item;
+}
+
+async function editMyUpload(file) {
+  const title = window.prompt("请输入新的资料标题", file.title);
+  if (title === null) return;
+  const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "资料更新失败。"));
+    return;
+  }
+  await loadMyUploads(currentMyUploadPage);
+}
+
+async function withdrawMyUpload(file) {
+  const action = file.status === "pending" ? "撤回" : "删除";
+  if (!window.confirm(`确定${action}“${file.title}”吗？该资料会从课程中移除。`)) return;
+  const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, `${action}失败。`));
+    return;
+  }
+  await loadMyUploads(currentMyUploadPage);
+}
+
 function readError(response, fallback) {
   return response.json()
     .then((body) => body.error?.message || body.detail || fallback)
@@ -817,6 +945,8 @@ function initHomePage() {
     event.preventDefault();
     loadUsers(1);
   });
+  myUploadsStatus?.addEventListener("change", () => loadMyUploads(1));
+  myUploadsRefreshButton?.addEventListener("click", () => loadMyUploads(currentMyUploadPage));
   const params = new URLSearchParams(window.location.search);
   const query = (params.get("q") || params.get("关键词"))?.trim();
   if (query) {

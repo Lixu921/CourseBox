@@ -86,6 +86,8 @@ def test_pages_are_available():
     assert 'id="admin-course-panel"' in homepage.text
     assert 'id="admin-user-panel"' in homepage.text
     assert 'id="user-list"' in homepage.text
+    assert 'id="my-uploads-panel"' in homepage.text
+    assert 'id="my-uploads-list"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
     assert 'href="#top"' in homepage.text
@@ -1453,3 +1455,74 @@ def test_non_admin_cannot_manage_users(tmp_path, monkeypatch):
         json={"username": "sneaky", "password": "sneaky-pass", "role": "admin"},
     ).status_code == 403
     assert client.get("/接口/用户", params={"关键词": "sneaky"}).json()["total"] == 0
+
+
+def test_my_uploads_listing_and_withdraw(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "我的上传课程"}).json()
+    assert client.post(
+        "/接口/用户",
+        json={"username": "mine", "password": "mine-pass", "role": "uploader"},
+    ).status_code == 201
+    assert client.post(
+        "/接口/用户",
+        json={"username": "other", "password": "other-pass", "role": "uploader"},
+    ).status_code == 201
+
+    # 未登录访问被拒绝（此时 client 已登录管理员，需另开一个会话）。
+    anonymous = create_client()
+    assert anonymous.get("/接口/我的资料").status_code == 401
+
+    worker = create_client()
+    login_user(worker, "mine", "mine-pass")
+    assert worker.get("/接口/我的资料").json()["total"] == 0
+
+    pending = worker.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "待审核讲义"},
+        files={"file": ("pending-notes.txt", b"pending-notes", "text/plain")},
+    ).json()
+    approved = worker.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "待审核习题"},
+        files={"file": ("pending-exercises.txt", b"pending-exercises", "text/plain")},
+    ).json()
+    assert client.patch(
+        f"/接口/资料/{approved['id']}/审核", json={"status": "approved"}
+    ).status_code == 200
+
+    body = worker.get("/接口/我的资料").json()
+    assert body["total"] == 2
+    assert {item["id"] for item in body["items"]} == {pending["id"], approved["id"]}
+    first = body["items"][0]
+    assert first["course"]["name"] == "我的上传课程"
+    assert first["course_id"] == course["id"]
+    assert first["uploaded_by"] == worker.get("/接口/当前用户").json()["id"]
+
+    # 状态筛选。
+    only_pending = worker.get("/接口/我的资料", params={"状态": "pending"}).json()
+    assert only_pending["total"] == 1
+    assert only_pending["items"][0]["id"] == pending["id"]
+    only_approved = worker.get("/接口/我的资料", params={"状态": "approved"}).json()
+    assert only_approved["total"] == 1
+    assert only_approved["items"][0]["id"] == approved["id"]
+    assert worker.get("/接口/我的资料", params={"状态": "rejected"}).json()["total"] == 0
+    assert worker.get("/接口/我的资料", params={"状态": "bogus"}).status_code == 422
+
+    # 别人看不到我的上传。
+    stranger = create_client()
+    login_user(stranger, "other", "other-pass")
+    assert stranger.get("/接口/我的资料").json()["total"] == 0
+
+    # 撤回待审核资料后列表减少，课程页也不再可见。
+    assert worker.delete(f"/接口/资料/{pending['id']}").status_code == 204
+    assert worker.get("/接口/我的资料").json()["total"] == 1
+    assert client.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 1
+
