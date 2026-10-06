@@ -1699,3 +1699,100 @@ def test_file_preview_endpoint(tmp_path, monkeypatch):
     # 预览行为同样写审计日志：上面共 4 次成功预览。
     assert len(actions) == 4
     connection.close()
+
+
+def test_backup_creates_and_rotates_backups(tmp_path, monkeypatch, capsys):
+    import zipfile
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app import backup
+    from app.db import init_db
+
+    init_db()
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / "讲义.txt").write_text("内容", encoding="utf-8")
+
+    destination = tmp_path / "backups"
+    stamps = ("20260101-010101", "20260102-020202", "20260103-030303")
+    results = []
+    for stamp in stamps:
+        result = backup.run(destination, keep=2, stamp=stamp)
+        # 每份备份在生成时都必须存在且通过完整性校验（旧备份随后会被轮转清理）。
+        assert result.database.is_file()
+        assert backup.integrity_ok(result.database)
+        results.append(result)
+
+    assert results[0].removed == []
+    # 第三次备份后，最旧的一组（数据库 + 上传归档）被清理。
+    assert sorted(path.name for path in results[-1].removed) == [
+        "coursebox-20260101-010101.db",
+        "uploads-20260101-010101.zip",
+    ]
+    assert sorted(path.name for path in destination.iterdir()) == [
+        "coursebox-20260102-020202.db",
+        "coursebox-20260103-030303.db",
+        "uploads-20260102-020202.zip",
+        "uploads-20260103-030303.zip",
+    ]
+
+    with zipfile.ZipFile(destination / "uploads-20260103-030303.zip") as archive:
+        assert archive.namelist() == ["讲义.txt"]
+
+    # keep=0 表示全部保留。
+    backup.run(destination, keep=0, stamp="20260104-040404")
+    assert len(list(destination.iterdir())) == 6
+
+    # 命令行入口：默认保留最近 1 组，并打印清理结果。
+    assert backup.main(["--destination", str(destination), "--keep", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "备份完成" in output
+    assert "已清理" in output
+    assert len(list(destination.iterdir())) == 2
+
+
+def test_backup_skips_uploads_and_reports_missing_database(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app import backup
+    from app.db import init_db
+
+    init_db()
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "note.txt").write_text("hi", encoding="utf-8")
+
+    destination = tmp_path / "backups"
+    result = backup.run(
+        destination, include_uploads=False, stamp="20260101-010101"
+    )
+    assert result.uploads is None
+    assert [path.name for path in destination.iterdir()] == [
+        "coursebox-20260101-010101.db"
+    ]
+
+    # 上传目录为空时跳过打包，不算失败。
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "empty-uploads"))
+    assert backup.main(
+        ["--destination", str(destination), "--keep", "0"]
+    ) == 0
+    assert "已跳过打包" in capsys.readouterr().out
+
+    # 数据库不存在时返回 1 并给出原因。
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "missing.db"))
+    assert backup.main(["--destination", str(destination)]) == 1
+    assert "备份失败" in capsys.readouterr().err
+
+
+def test_backup_script_entrypoint_is_importable():
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "backup.py"
+    spec = importlib.util.spec_from_file_location("coursebox_backup_script", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert callable(module.main)

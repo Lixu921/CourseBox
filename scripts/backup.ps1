@@ -1,5 +1,7 @@
 param(
-    [string]$Destination = "backups"
+    [string]$Destination = "backups",
+    [int]$Keep = 7,
+    [switch]$SkipUploads
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,9 +15,6 @@ if (-not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
 }
 
 $destinationPath = [System.IO.Path]::GetFullPath($Destination)
-New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$backupPath = Join-Path $destinationPath "coursebox-$stamp.db"
 
 $pythonCommand = $env:COURSEBOX_PYTHON
 if ([string]::IsNullOrWhiteSpace($pythonCommand)) {
@@ -30,8 +29,8 @@ if ([string]::IsNullOrWhiteSpace($pythonCommand)) {
 if ([string]::IsNullOrWhiteSpace($pythonCommand)) {
     throw "Python was not found. Set COURSEBOX_PYTHON to the Python executable path."
 }
-$env:COURSEBOX_BACKUP_SOURCE = $databasePath
-$env:COURSEBOX_BACKUP_TARGET = $backupPath
-& $pythonCommand scripts/db_backup.py
-if ($LASTEXITCODE -ne 0) { throw "Database backup failed" }
-Write-Output $backupPath
+
+$arguments = @("scripts/backup.py", "--destination", $destinationPath, "--keep", $Keep)
+if ($SkipUploads) { $arguments += "--no-uploads" }
+& $pythonCommand @arguments
+if ($LASTEXITCODE -ne 0) { throw "Backup failed" }

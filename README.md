@@ -4,22 +4,36 @@
 
 ## 功能
 
-- 首页展示课程列表
-- 课程详情页展示资料并支持上传
-- 上传文件大小限制为 20 MB
+- 首页展示课程列表，支持按课程、文件类型、上传时间范围筛选，并按最新、最早、标题或大小排序
+- 搜索结果中的关键词在标题、文件名和课程名上高亮显示
+- 课程详情页展示资料并支持上传，上传区支持拖拽与多选，逐个显示进度和结果
+- PDF、图片和纯文本资料可以在弹层中在线预览，其余类型仍走下载
+- 上传文件大小限制为 20 MB（另有单课程、站点总量与磁盘剩余空间三重配额保护）
 - 使用随机文件名保存上传内容，保留原始文件名用于展示和下载
 - 直接下载课程资料
-- 搜索课程名、资料标题和原文件名
+- 搜索课程名、资料标题和原文件名；中文子串通过 FTS5 trigram 索引命中
+- 三种角色：管理员可管理课程与用户，上传者提交的资料需审核，浏览者只读
+- 「我的上传」列出自己提交的资料及其审核状态，待审核的可撤回
 - 前端提供加载、空结果和请求失败提示
+
+## 权限与账户
+
+首次启动会创建 `COURSEBOX_ADMIN_USERNAME` 指定的管理员账户。登录后可在首页的「用户管理」面板查看用户列表、创建账户、调整角色、停用/启用账户和重置密码；系统始终保留至少一个启用的管理员，且不允许修改或停用当前登录账户。
+
+非管理员上传的资料默认为待审核状态，管理员在课程页或资料列表上执行通过/拒绝。停用账户会立即失效其已登录会话，重置密码同样会作废该用户的全部会话。
 
 ## 目录
 
 ```text
 CourseBox/
 ├─ app/
+│  ├─ api/auth.py       # 登录、当前用户、退出
 │  ├─ api/courses.py    # 课程接口
-│  ├─ api/files.py      # 资料上传、下载和搜索接口
+│  ├─ api/files.py      # 资料上传、下载、预览和搜索接口
+│  ├─ api/users.py      # 管理员用户管理
+│  ├─ backup.py         # 数据库与上传目录备份、轮转
 │  ├─ db.py             # SQLite 连接和建表
+│  ├─ maintenance.py    # 审计日志与登录记录的保留策略清理
 │  ├─ main.py           # FastAPI 应用和页面路由
 │  └─ schemas.py        # 请求、响应模型
 ├─ static/
@@ -30,17 +44,21 @@ CourseBox/
 ├─ tests/test_api.py    # API 和页面集成测试
 ├─ scripts/
 │  ├─ start.ps1         # Windows 启动脚本
-│  ├─ backup.ps1        # SQLite 在线备份
+│  ├─ backup.ps1        # 备份脚本（调用 scripts/backup.py）
+│  ├─ backup.py         # 计划任务入口，等价于 py -m app.backup
+│  ├─ db_check.py       # 备份完整性校验
 │  └─ restore.ps1       # 备份校验和恢复
+├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest
 ├─ .env.example         # 环境配置示例
 ├─ pyproject.toml       # 项目元数据、pytest 和 Ruff 配置
 ├─ data/                # 本地 SQLite 数据库，不提交到 Git
-└─ uploads/             # 上传文件，不提交到 Git
+├─ uploads/             # 上传文件，不提交到 Git
+└─ backups/             # 备份输出目录，不提交到 Git
 ```
 
 ## 环境要求
 
-- Python 3.14
+- Python 3.11 及以上（本地在 3.14 上验证，CI 覆盖 3.11 / 3.12 / 3.13）
 - Windows 环境建议使用 `py` 命令
 
 ## 安装依赖
@@ -92,22 +110,38 @@ Windows 也可以使用启动脚本：
 ## 运行测试
 
 ```powershell
+py -m ruff check .
 py -m pytest -q
 ```
 
-测试覆盖健康检查、页面路由、课程创建、详情、分页、编辑和删除、资料上传、重复检测、元数据、清理、文件下载以及搜索接口，也覆盖统一错误响应和请求日志。
+测试覆盖健康检查、页面路由、课程创建、详情、分页、编辑和删除、资料上传、重复检测、元数据、清理、文件下载、搜索与筛选、预览、用户管理、上传配额和备份轮转，也覆盖统一错误响应和请求日志。
+
+仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13 上先跑 `ruff check .` 再跑 `pytest -q`；推送或提交 PR 时自动执行。
 
 ## 部署与运维
 
-生产环境建议使用反向代理提供 HTTPS，并将 `COURSEBOX_HOST` 设置为 `127.0.0.1`，仅由反向代理访问 Uvicorn。应用会在请求完成时输出一行 JSON 日志，包含事件、请求 ID、方法、路径、状态码和耗时；发生未处理异常时会记录堆栈，但 API 只向客户端返回通用错误信息。
+生产环境建议使用反向代理提供 HTTPS，并将 `COURSEBOX_HOST` 设置为 `127.0.0.1`，仅由反向代理访问 Uvicorn。生产环境必须显式设置 `COURSEBOX_ADMIN_PASSWORD`（至少 8 位），否则应用拒绝启动。应用会在请求完成时输出一行 JSON 日志，包含事件、请求 ID、方法、路径、状态码和耗时；发生未处理异常时会记录堆栈，但 API 只向客户端返回通用错误信息。
 
 健康检查地址为 `/接口/健康`。响应会分别检查数据库完整性、上传目录可写性和磁盘剩余空间；任一检查失败时返回 HTTP 503。监控应同时关注 HTTP 状态码和响应中的 `checks` 字段。
 
-SQLite 备份使用在线备份接口，不需要停止服务：
+审计日志和登录失败记录按保留期自动清理，默认审计日志保留 90 天（`COURSEBOX_AUDIT_RETENTION_DAYS`）。除启动时清理外，也可以手动执行：
 
 ```powershell
-.\scripts\backup.ps1 -Destination backups
+py -m app.maintenance
 ```
+
+### 备份与轮转
+
+备份使用 SQLite 在线备份接口，不需要停止服务；数据库通过 `PRAGMA quick_check` 校验后才会改名为正式备份，同时会把上传目录打包成同名时间戳的 zip：
+
+```powershell
+py -m app.backup --destination backups --keep 7
+# 或使用脚本 / PowerShell 封装
+py scripts\backup.py --destination backups --keep 7
+.\scripts\backup.ps1 -Destination backups -Keep 7
+```
+
+`--keep` 表示保留最近 N 组备份（每组包含数据库和上传归档），更旧的会被自动删除；`--keep 0` 表示全部保留，`--no-uploads` 表示只备份数据库。默认输出目录为项目下的 `backups/`（可用 `COURSEBOX_BACKUP_DIR` 覆盖），默认保留份数取 `COURSEBOX_BACKUP_KEEP`（默认 7）。
 
 恢复前先停止应用，恢复脚本会校验备份完整性；覆盖已有数据库时显式使用 `-Force`，并自动保存一个 `.before-restore` 文件：
 
@@ -115,7 +149,32 @@ SQLite 备份使用在线备份接口，不需要停止服务：
 .\scripts\restore.ps1 -Backup .\backups\coursebox-20260908-120000.db -Force
 ```
 
-数据库和上传目录需要分别纳入备份策略。数据库备份不包含上传文件，上传目录应使用文件系统快照或单独的归档任务备份。
+### 注册定时备份
+
+Windows 计划任务每天凌晨 3 点执行一次，保留最近 7 组：
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "py" `
+    -Argument "scripts\backup.py --destination backups --keep 7" `
+    -WorkingDirectory "C:\Users\璃绪\Desktop\study\CourseBox"
+$trigger = New-ScheduledTaskTrigger -Daily -At 3am
+Register-ScheduledTask -TaskName "CourseBox 每日备份" -Action $action -Trigger $trigger -RunLevel Highest
+```
+
+也可以用 `schtasks` 一行注册：
+
+```powershell
+schtasks /Create /TN "CourseBox 每日备份" /SC DAILY /ST 03:00 ^
+    /TR "py C:\Users\璃绪\Desktop\study\CourseBox\scripts\backup.py --destination backups --keep 7"
+```
+
+Linux/macOS 用 cron 每天 3 点执行，保留最近 7 组：
+
+```cron
+0 3 * * * cd /srv/CourseBox && /usr/bin/python3 -m app.backup --destination backups --keep 7 >> /var/log/coursebox-backup.log 2>&1
+```
+
+备份目录建议放在另一块磁盘或同步到远端存储；只保留本机备份无法应对磁盘故障。
 
 ## 截图
 

@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 data/
 uploads/
+backups/
 config.json
 .env
 .pytest_cache/
