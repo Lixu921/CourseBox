@@ -50,6 +50,55 @@
       <input id="search-input" name="关键词" type="search" placeholder="搜索课程或资料" autocomplete="off">
       <button type="submit">搜索</button>
     </form>
+    <div id="search-filters" class="search-filters" role="group" aria-label="搜索筛选">
+      <div class="filter-field">
+        <label for="search-course">课程</label>
+        <select id="search-course">
+          <option value="">全部课程</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="search-type">类型</label>
+        <select id="search-type">
+          <option value="">全部类型</option>
+          <option value="pdf">PDF</option>
+          <option value="docx">Word（docx）</option>
+          <option value="doc">Word（doc）</option>
+          <option value="pptx">PPT（pptx）</option>
+          <option value="ppt">PPT（ppt）</option>
+          <option value="xlsx">Excel（xlsx）</option>
+          <option value="xls">Excel（xls）</option>
+          <option value="zip">ZIP</option>
+          <option value="rar">RAR</option>
+          <option value="7z">7Z</option>
+          <option value="txt">TXT</option>
+          <option value="md">Markdown</option>
+          <option value="csv">CSV</option>
+          <option value="png">PNG</option>
+          <option value="jpg">JPG</option>
+          <option value="jpeg">JPEG</option>
+          <option value="gif">GIF</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="search-start">起始日期</label>
+        <input id="search-start" type="date">
+      </div>
+      <div class="filter-field">
+        <label for="search-end">结束日期</label>
+        <input id="search-end" type="date">
+      </div>
+      <div class="filter-field">
+        <label for="search-sort">排序</label>
+        <select id="search-sort">
+          <option value="newest">最新上传</option>
+          <option value="oldest">最早上传</option>
+          <option value="name">按标题</option>
+          <option value="size">按大小</option>
+        </select>
+      </div>
+      <button id="search-reset" class="text-button" type="button">重置筛选</button>
+    </div>
     <section id="admin-course-panel" class="admin-panel" hidden aria-labelledby="admin-course-heading">
       <div class="section-heading">
         <h2 id="admin-course-heading">创建课程</h2>

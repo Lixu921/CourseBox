@@ -3,6 +3,7 @@ import logging
 import shutil
 import sqlite3
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -223,6 +224,53 @@ def build_search_filter(
     if not clauses:
         return "", []
     return " AND ".join(clauses), params
+
+
+SortOption = Literal["newest", "oldest", "name", "size"]
+SORT_OPTIONS: dict[str, str] = {
+    "newest": "f.upload_time DESC, f.id DESC",
+    "oldest": "f.upload_time ASC, f.id ASC",
+    "name": "f.title COLLATE NOCASE ASC, f.id DESC",
+    "size": "f.size DESC, f.id DESC",
+}
+
+
+def parse_date(value: str | None, field: str) -> date | None:
+    """把 YYYY-MM-DD 解析为日期，空值返回 None，非法值直接 422。"""
+
+    if value is None or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422, detail=f"{field}需要形如 2026-10-06 的日期"
+        ) from error
+
+
+def build_extra_filters(
+    course_id: int | None,
+    extension: str | None,
+    start: date | None,
+    end: date | None,
+) -> tuple[list[str], list[object]]:
+    """课程、扩展名、上传时间范围三类筛选条件，与关键词条件是 AND 关系。"""
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if course_id is not None:
+        clauses.append("f.course_id = ?")
+        params.append(course_id)
+    if extension:
+        clauses.append("LOWER(f.original_name) LIKE ? ESCAPE '\\'")
+        params.append(f"%.{escape_like(extension)}")
+    if start is not None:
+        clauses.append("f.upload_time >= ?")
+        params.append(f"{start.isoformat()} 00:00:00")
+    if end is not None:
+        clauses.append("f.upload_time <= ?")
+        params.append(f"{end.isoformat()} 23:59:59")
+    return clauses, params
 
 
 def remove_stored_file(path: Path | None) -> None:
@@ -579,25 +627,42 @@ search_router = APIRouter(tags=["搜索"])
 def search_files(
     request: Request,
     关键词: str = "",
+    课程编号: int | None = Query(None, ge=1, description="按课程编号筛选"),
+    类型: str | None = Query(None, max_length=20, description="按扩展名筛选，如 pdf"),
+    起始时间: str | None = Query(None, description="上传时间不早于该日期（YYYY-MM-DD）"),
+    结束时间: str | None = Query(None, description="上传时间不晚于该日期（YYYY-MM-DD）"),
+    排序: SortOption = Query("newest", description="排序方式"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FilePage:
     keyword = (关键词 or request.query_params.get("q", "")).strip()
-    if not keyword:
+    extension = (类型 or "").strip().lstrip(".").lower()
+    start = parse_date(起始时间, "起始时间")
+    end = parse_date(结束时间, "结束时间")
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=422, detail="起始时间不能晚于结束时间")
+
+    extra_clauses, extra_params = build_extra_filters(课程编号, extension, start, end)
+    # 关键词和筛选条件都为空时不必查库；只有筛选条件时按条件列出资料。
+    if not keyword and not extra_clauses:
         return FilePage(**page_response([], 0, page, page_size))
 
+    order = SORT_OPTIONS[排序]
     total = 0
     rows: list[sqlite3.Row] = []
-    for use_fts in (True, False):
-        where, params = build_search_filter(keyword, use_fts)
-        if not where:
-            break
+    for use_fts in ((True, False) if keyword else (False,)):
+        keyword_clause, keyword_params = build_search_filter(keyword, use_fts)
+        conditions = [
+            clause for clause in (keyword_clause, *extra_clauses) if clause
+        ]
+        clause = " AND ".join(conditions) if conditions else "1 = 1"
+        params: list[object] = [*keyword_params, *extra_params]
         try:
             total = db.execute(
-                "SELECT COUNT(*) FROM files AS f "  # noqa: S608 - 条件由 build_search_filter 生成
+                "SELECT COUNT(*) FROM files AS f "  # noqa: S608 - 条件由内部函数生成
                 "JOIN courses AS c ON c.id = f.course_id "
-                f"WHERE f.status = 'approved' AND ({where})",
+                f"WHERE f.status = 'approved' AND ({clause})",
                 params,
             ).fetchone()[0]
             rows = db.execute(
@@ -606,9 +671,9 @@ def search_files(
                        f.mime_type, f.sha256, f.status,
                        c.name AS course_name, c.college, c.semester, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
-                WHERE f.status = 'approved' AND ({where})
-                ORDER BY f.id DESC LIMIT ? OFFSET ?
-                """,  # noqa: S608 - 条件由 build_search_filter 生成
+                WHERE f.status = 'approved' AND ({clause})
+                ORDER BY {order} LIMIT ? OFFSET ?
+                """,  # noqa: S608 - 条件与排序都来自内部白名单
                 (*params, page_size, (page - 1) * page_size),
             ).fetchall()
             break

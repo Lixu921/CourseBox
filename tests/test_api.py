@@ -73,6 +73,9 @@ def test_pages_are_available():
 
     assert homepage.status_code == 200
     assert 'id="search-form"' in homepage.text
+    assert 'id="search-filters"' in homepage.text
+    assert 'id="search-course"' in homepage.text
+    assert 'id="search-sort"' in homepage.text
     assert course_page.status_code == 200
     assert ascii_course_page.status_code == 200
     assert 'id="upload-form"' in course_page.text
@@ -1526,3 +1529,85 @@ def test_my_uploads_listing_and_withdraw(tmp_path, monkeypatch):
     assert worker.get("/接口/我的资料").json()["total"] == 1
     assert client.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 1
 
+
+
+
+def test_search_filters_and_sorting(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    data_structures = client.post("/接口/课程", json={"name": "数据结构"}).json()
+    maths = client.post("/接口/课程", json={"name": "高等数学"}).json()
+
+    def upload(course_id, title, filename, payload):
+        response = client.post(
+            f"/接口/课程/{course_id}/资料",
+            data={"title": title},
+            files={"file": (filename, payload, "application/octet-stream")},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    lecture = upload(data_structures["id"], "第一章 绪论", "lecture-01.pdf", b"a" * 10)
+    exercise = upload(data_structures["id"], "习题答案", "exercise.pdf", b"b" * 200)
+    slides = upload(maths["id"], "极限与连续", "chapter1.pptx", b"c" * 100)
+
+    # 既没有关键词也没有筛选条件时不做全表扫描。
+    assert client.get("/接口/搜索").json()["total"] == 0
+
+    # 只有筛选条件、没有关键词时也要能列出资料。
+    by_course = client.get("/接口/搜索", params={"课程编号": maths["id"]}).json()
+    assert by_course["total"] == 1
+    assert by_course["items"][0]["id"] == slides["id"]
+
+    by_type = client.get("/接口/搜索", params={"类型": "pdf"}).json()
+    assert {item["id"] for item in by_type["items"]} == {lecture["id"], exercise["id"]}
+    assert client.get("/接口/搜索", params={"类型": ".PDF"}).json()["total"] == 2
+    assert client.get("/接口/搜索", params={"类型": "pptx"}).json()["total"] == 1
+    assert client.get("/接口/搜索", params={"类型": "zip"}).json()["total"] == 0
+
+    # 课程 + 类型组合。
+    combined = client.get(
+        "/接口/搜索", params={"课程编号": data_structures["id"], "类型": "pdf"}
+    ).json()
+    assert combined["total"] == 2
+
+    # 关键词与筛选条件同时生效（AND）。
+    assert client.get(
+        "/接口/搜索", params={"q": "习题", "类型": "pdf"}
+    ).json()["total"] == 1
+    assert client.get(
+        "/接口/搜索", params={"q": "习题", "类型": "pptx"}
+    ).json()["total"] == 0
+
+    # 排序：用起始时间作为兜底筛选，保证能列出全部三份资料。
+    base = {"起始时间": "2000-01-01"}
+    assert client.get("/接口/搜索", params=base).json()["total"] == 3
+    by_size = client.get("/接口/搜索", params={**base, "排序": "size"}).json()["items"]
+    assert [item["size"] for item in by_size] == [200, 100, 10]
+    by_name = client.get("/接口/搜索", params={**base, "排序": "name"}).json()["items"]
+    assert [item["title"] for item in by_name] == sorted(
+        ["第一章 绪论", "习题答案", "极限与连续"]
+    )
+    newest = client.get("/接口/搜索", params={**base, "排序": "newest"}).json()["items"]
+    assert [item["id"] for item in newest] == [slides["id"], exercise["id"], lecture["id"]]
+    oldest = client.get("/接口/搜索", params={**base, "排序": "oldest"}).json()["items"]
+    assert [item["id"] for item in oldest] == [lecture["id"], exercise["id"], slides["id"]]
+    assert client.get("/接口/搜索", params={"排序": "bogus"}).status_code == 422
+
+    # 时间范围与参数校验。
+    assert client.get(
+        "/接口/搜索", params={"起始时间": "2999-01-01"}
+    ).json()["total"] == 0
+    assert client.get(
+        "/接口/搜索", params={"结束时间": "2000-01-01"}
+    ).json()["total"] == 0
+    assert client.get(
+        "/接口/搜索", params={"起始时间": "2020-01-01", "结束时间": "2019-01-01"}
+    ).status_code == 422
+    assert client.get("/接口/搜索", params={"起始时间": "not-a-date"}).status_code == 422

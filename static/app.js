@@ -42,6 +42,12 @@ const myUploadsCount = document.querySelector("#my-uploads-count");
 const myUploadsPagination = document.querySelector("#my-uploads-pagination");
 const myUploadsStatus = document.querySelector("#my-uploads-status");
 const myUploadsRefreshButton = document.querySelector("#my-uploads-refresh");
+const searchCourse = document.querySelector("#search-course");
+const searchType = document.querySelector("#search-type");
+const searchStart = document.querySelector("#search-start");
+const searchEnd = document.querySelector("#search-end");
+const searchSort = document.querySelector("#search-sort");
+const searchResetButton = document.querySelector("#search-reset");
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
@@ -52,6 +58,7 @@ let currentCourseId = null;
 let currentFilePage = 1;
 let currentUserPage = 1;
 let currentMyUploadPage = 1;
+let currentSearchQuery = "";
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -76,6 +83,44 @@ function formatUploadTime(value) {
 
 function courseUrl(course) {
   return `/course?id=${encodeURIComponent(course.id)}`;
+}
+
+// 把命中的关键词片段包进 <mark>，按空格拆词、大小写不敏感。
+function highlight(text, query) {
+  const fragment = document.createDocumentFragment();
+  const source = String(text ?? "");
+  const terms = (query || "")
+    .split(/\s+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  if (!terms.length) {
+    fragment.append(source);
+    return fragment;
+  }
+  const lower = source.toLowerCase();
+  let cursor = 0;
+  while (cursor < source.length) {
+    let hit = -1;
+    let hitTerm = "";
+    terms.forEach((term) => {
+      const found = lower.indexOf(term, cursor);
+      if (found === -1) return;
+      if (hit === -1 || found < hit) {
+        hit = found;
+        hitTerm = term;
+      }
+    });
+    if (hit === -1) {
+      fragment.append(source.slice(cursor));
+      break;
+    }
+    if (hit > cursor) fragment.append(source.slice(cursor, hit));
+    const mark = document.createElement("mark");
+    mark.textContent = source.slice(hit, hit + hitTerm.length);
+    fragment.append(mark);
+    cursor = hit + hitTerm.length;
+  }
+  return fragment;
 }
 
 function renderPagination(container, data, onPage) {
@@ -238,13 +283,15 @@ function renderSearchResults(data) {
     const card = document.createElement("article");
     card.className = "search-result-card";
     const title = document.createElement("h3");
-    title.textContent = file.title;
+    title.append(highlight(file.title, currentSearchQuery));
     const metadata = document.createElement("p");
     metadata.className = "course-meta";
-    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)}`;
+    metadata.append(highlight(file.original_name, currentSearchQuery));
+    metadata.append(` · ${formatFileSize(file.size)}`);
     const course = document.createElement("p");
     course.className = "result-course";
-    course.textContent = `所属课程：${file.course.name}`;
+    course.append("所属课程：");
+    course.append(highlight(file.course.name, currentSearchQuery));
     const actions = document.createElement("div");
     actions.className = "result-actions";
     const courseLink = document.createElement("a");
@@ -283,21 +330,79 @@ async function loadCourses(page = 1) {
   }
 }
 
+function activeFilterCount() {
+  return [searchCourse?.value, searchType?.value, searchStart?.value, searchEnd?.value]
+    .filter(Boolean).length;
+}
+
+function searchFilterParams() {
+  const params = new URLSearchParams();
+  if (searchCourse?.value) params.set("课程编号", searchCourse.value);
+  if (searchType?.value) params.set("类型", searchType.value);
+  if (searchStart?.value) params.set("起始时间", searchStart.value);
+  if (searchEnd?.value) params.set("结束时间", searchEnd.value);
+  if (searchSort?.value) params.set("排序", searchSort.value);
+  return params;
+}
+
 async function searchFiles(query, page = 1) {
+  currentSearchQuery = query;
   showState(courseList, "正在搜索资料...");
-  courseHeading.textContent = "搜索结果";
+  courseHeading.textContent = query ? "搜索结果" : "筛选结果";
   courseCount.textContent = "";
   coursePagination.innerHTML = "";
   setSearchLoading(true);
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&page=${page}&page_size=12`);
-    if (!response.ok) throw new Error("搜索失败");
+    const params = searchFilterParams();
+    params.set("q", query);
+    params.set("page", String(page));
+    params.set("page_size", "12");
+    const response = await fetch(`/api/search?${params}`);
+    if (!response.ok) throw new Error(await readError(response, "搜索失败"));
     renderSearchResults(await response.json());
   } catch (error) {
-    showState(courseList, "搜索失败，请检查网络后重试。", true);
+    showState(courseList, `${error.message || "搜索失败"}，请检查筛选条件后重试。`, true);
     courseCount.textContent = "";
   } finally {
     setSearchLoading(false);
+  }
+}
+
+function runSearch() {
+  const query = searchInput.value.trim();
+  const url = new URL(window.location.href);
+  if (query) url.searchParams.set("q", query);
+  else url.searchParams.delete("q");
+  ["课程编号", "类型", "起始时间", "结束时间", "排序"].forEach((key) => url.searchParams.delete(key));
+  searchFilterParams().forEach((value, key) => url.searchParams.set(key, value));
+  window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  if (query || activeFilterCount()) searchFiles(query, 1);
+  else loadCourses();
+}
+
+function resetSearchFilters() {
+  if (searchCourse) searchCourse.value = "";
+  if (searchType) searchType.value = "";
+  if (searchStart) searchStart.value = "";
+  if (searchEnd) searchEnd.value = "";
+  if (searchSort) searchSort.value = "newest";
+  runSearch();
+}
+
+async function populateCourseFilter() {
+  if (!searchCourse) return;
+  try {
+    const response = await fetch("/api/courses?page=1&page_size=100");
+    if (!response.ok) return;
+    const data = await response.json();
+    (data.items || []).forEach((course) => {
+      const option = document.createElement("option");
+      option.value = course.id;
+      option.textContent = course.name;
+      searchCourse.append(option);
+    });
+  } catch (error) {
+    // 课程下拉只是筛选辅助，加载失败时保持「全部课程」即可。
   }
 }
 
@@ -927,15 +1032,12 @@ function initAuth() {
 function initHomePage() {
   searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const query = searchInput.value.trim();
-    if (query) {
-      window.history.replaceState({}, "", `/?q=${encodeURIComponent(query)}`);
-      searchFiles(query);
-    } else {
-      window.history.replaceState({}, "", "/");
-      loadCourses();
-    }
+    runSearch();
   });
+  [searchCourse, searchType, searchStart, searchEnd, searchSort].forEach((control) => {
+    control?.addEventListener("change", () => runSearch());
+  });
+  searchResetButton?.addEventListener("click", resetSearchFilters);
   courseCreateForm?.addEventListener("submit", createCourse);
   userCreateForm?.addEventListener("submit", createUser);
   userFilterButton?.addEventListener("click", () => loadUsers(1));
@@ -947,14 +1049,18 @@ function initHomePage() {
   });
   myUploadsStatus?.addEventListener("change", () => loadMyUploads(1));
   myUploadsRefreshButton?.addEventListener("click", () => loadMyUploads(currentMyUploadPage));
+
   const params = new URLSearchParams(window.location.search);
-  const query = (params.get("q") || params.get("关键词"))?.trim();
-  if (query) {
-    searchInput.value = query;
-    searchFiles(query);
-  } else {
-    loadCourses();
-  }
+  const query = (params.get("q") || params.get("关键词"))?.trim() || "";
+  if (searchCourse) searchCourse.value = params.get("课程编号") || "";
+  if (searchType) searchType.value = params.get("类型") || "";
+  if (searchStart) searchStart.value = params.get("起始时间") || "";
+  if (searchEnd) searchEnd.value = params.get("结束时间") || "";
+  if (searchSort) searchSort.value = params.get("排序") || "newest";
+  populateCourseFilter();
+  if (query) searchInput.value = query;
+  if (query || activeFilterCount()) searchFiles(query, 1);
+  else loadCourses();
 }
 
 async function initCoursePage() {
