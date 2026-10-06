@@ -2,7 +2,7 @@ import base64
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 PASSWORD_ITERATIONS = 310_000
 SESSION_TTL = timedelta(days=7)
@@ -39,7 +39,7 @@ def verify_password(password: str, encoded: str) -> bool:
 def new_session_token() -> tuple[str, str, str]:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-    expires_at = (datetime.now(timezone.utc) + SESSION_TTL).strftime(
+    expires_at = (datetime.now(UTC) + SESSION_TTL).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     return token, token_hash, expires_at

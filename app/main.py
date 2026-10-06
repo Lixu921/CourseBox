@@ -316,7 +316,7 @@ def localized_openapi():
     schema["info"]["title"] = "课盒子接口"
     schema["info"]["description"] = "课盒子课程资料共享接口。"
 
-    for path, path_item in list(schema["paths"].items()):
+    for path in list(schema["paths"]):
         localized_path = path.replace("{course_id}", "{课程编号}").replace(
             "{file_id}", "{资料编号}"
         )

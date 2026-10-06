@@ -1,8 +1,8 @@
 import logging
 import sqlite3
 import uuid
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 from app.config import (
     bootstrap_admin_password,
@@ -365,7 +365,7 @@ def clear_deletion_journal(
     placeholders = ", ".join("?" for _ in staged_names)
     try:
         connection.execute(
-            f"DELETE FROM file_deletion_journal WHERE staged_name IN ({placeholders})",
+            f"DELETE FROM file_deletion_journal WHERE staged_name IN ({placeholders})",  # noqa: S608 - 占位符数量由内部列表决定
             staged_names,
         )
         connection.commit()

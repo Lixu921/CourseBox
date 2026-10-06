@@ -133,7 +133,7 @@ def update_course(
     assignments = ", ".join(f"{field} = ?" for field in values)
     try:
         cursor = db.execute(
-            f"UPDATE courses SET {assignments} WHERE id = ?",
+            f"UPDATE courses SET {assignments} WHERE id = ?",  # noqa: S608 - 字段名来自校验过的模型
             (*values.values(), course_id),
         )
         if cursor.rowcount == 0:

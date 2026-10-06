@@ -17,7 +17,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "httpx==0.28.1",
-    "httpx2==2.12.0",
     "pytest==9.1.1",
     "ruff>=0.12,<1",
 ]
@@ -32,4 +31,12 @@ line-length = 100
 exclude = ["data", "uploads"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "B", "S", "UP"]
+ignore = [
+    # FastAPI 依赖注入必须写成默认参数 Depends()/Query()/File()，这是框架约定。
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试代码里断言、固定口令和拼接 SQL 都是正常写法。
+"tests/*" = ["S101", "S105", "S608"]

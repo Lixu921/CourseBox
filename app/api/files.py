@@ -263,7 +263,7 @@ def list_course_files(
         visibility = "(f.status = 'approved' OR f.uploaded_by = ?)"
         params.append(user["id"])
     total = db.execute(
-        f"SELECT COUNT(*) FROM files AS f WHERE f.course_id = ? AND {visibility}",
+        f"SELECT COUNT(*) FROM files AS f WHERE f.course_id = ? AND {visibility}",  # noqa: S608 - 可见性片段来自内部常量
         params,
     ).fetchone()[0]
     params.extend([page_size, (page - 1) * page_size])
@@ -273,7 +273,7 @@ def list_course_files(
                mime_type, sha256, status, uploaded_by
         FROM files AS f WHERE f.course_id = ? AND {visibility}
         ORDER BY id DESC LIMIT ? OFFSET ?
-        """,
+        """,  # noqa: S608 - 可见性片段来自内部常量
         params,
     ).fetchall()
     return FilePage(
@@ -551,7 +551,7 @@ def search_files(
             break
         try:
             total = db.execute(
-                "SELECT COUNT(*) FROM files AS f "
+                "SELECT COUNT(*) FROM files AS f "  # noqa: S608 - 条件由 build_search_filter 生成
                 "JOIN courses AS c ON c.id = f.course_id "
                 f"WHERE f.status = 'approved' AND ({where})",
                 params,
@@ -564,7 +564,7 @@ def search_files(
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
                 WHERE f.status = 'approved' AND ({where})
                 ORDER BY f.id DESC LIMIT ? OFFSET ?
-                """,
+                """,  # noqa: S608 - 条件由 build_search_filter 生成
                 (*params, page_size, (page - 1) * page_size),
             ).fetchall()
             break
