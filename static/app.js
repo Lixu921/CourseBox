@@ -19,6 +19,13 @@ const fileInput = document.querySelector("#file-input");
 const fileSelection = document.querySelector("#file-selection");
 const uploadProgress = document.querySelector("#upload-progress");
 const uploadProgressLabel = document.querySelector("#upload-progress-label");
+const uploadResults = document.querySelector("#upload-results");
+const dropZone = document.querySelector("#drop-zone");
+const previewDialog = document.querySelector("#preview-dialog");
+const previewTitle = document.querySelector("#preview-title");
+const previewBody = document.querySelector("#preview-body");
+const previewDownload = document.querySelector("#preview-download");
+const previewClose = document.querySelector("#preview-close");
 const authStatus = document.querySelector("#auth-status");
 const loginToggle = document.querySelector("#login-toggle");
 const logoutButton = document.querySelector("#logout-button");
@@ -52,6 +59,9 @@ const searchResetButton = document.querySelector("#search-reset");
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
 const STATUS_LABELS = { approved: "已通过", pending: "待审核", rejected: "已拒绝" };
+// 与后端 PREVIEW_MEDIA_TYPES 保持一致，只预览确定不会执行脚本的类型。
+const PREVIEW_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif"]);
+const PREVIEW_DOCUMENT_EXTENSIONS = new Set(["pdf", "txt", "md"]);
 let currentUser = null;
 let currentCourse = null;
 let currentCourseId = null;
@@ -298,6 +308,8 @@ function renderSearchResults(data) {
     courseLink.className = "course-link";
     courseLink.href = courseUrl(file.course);
     courseLink.textContent = "查看课程";
+    const preview = previewButton(file);
+    if (preview) actions.append(preview);
     const download = document.createElement("a");
     download.className = "download-link";
     download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
@@ -460,6 +472,8 @@ function renderFiles(data, courseId) {
     download.setAttribute("download", "");
     const actions = document.createElement("div");
     actions.className = "file-actions";
+    const preview = previewButton(file);
+    if (preview) actions.append(preview);
     if (canManageFile(file)) {
       const edit = document.createElement("button");
       edit.type = "button";
@@ -612,15 +626,80 @@ async function refreshCourse() {
   renderCourseActions(currentCourse);
 }
 
+function fileExtension(name) {
+  const match = /\.([^.]+)$/.exec(name || "");
+  return match ? match[1].toLowerCase() : "";
+}
+
+function isPreviewable(file) {
+  const extension = fileExtension(file.original_name);
+  return (
+    PREVIEW_IMAGE_EXTENSIONS.has(extension) ||
+    PREVIEW_DOCUMENT_EXTENSIONS.has(extension)
+  );
+}
+
+function openPreview(file) {
+  if (!previewDialog) return;
+  const source = `/api/files/${encodeURIComponent(file.id)}/preview`;
+  previewTitle.textContent = file.title;
+  if (previewDownload) {
+    previewDownload.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+  }
+  previewBody.innerHTML = "";
+  let element;
+  if (PREVIEW_IMAGE_EXTENSIONS.has(fileExtension(file.original_name))) {
+    element = document.createElement("img");
+    element.src = source;
+    element.alt = file.title;
+  } else {
+    element = document.createElement("iframe");
+    element.src = source;
+    element.title = file.title;
+  }
+  previewBody.append(element);
+  previewDialog.hidden = false;
+  document.body.classList.add("preview-open");
+  previewClose?.focus();
+}
+
+function closePreview() {
+  if (!previewDialog || previewDialog.hidden) return;
+  previewDialog.hidden = true;
+  // 清空内容才能真正终止 iframe 里的加载与渲染。
+  previewBody.innerHTML = "";
+  document.body.classList.remove("preview-open");
+}
+
+function previewButton(file) {
+  if (!isPreviewable(file)) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "text-button";
+  button.textContent = "预览";
+  button.addEventListener("click", () => openPreview(file));
+  return button;
+}
+
 function updateFileSelection() {
-  const file = fileInput.files[0];
-  if (!file) {
+  const files = Array.from(fileInput.files || []);
+  if (!files.length) {
     fileSelection.textContent = "单个文件不超过 20 兆字节。";
     fileSelection.className = "form-hint";
     return;
   }
-  fileSelection.textContent = `${file.name} · ${formatFileSize(file.size)}`;
-  fileSelection.className = file.size > MAX_FILE_SIZE ? "form-hint error-message" : "form-hint";
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  const summary = `${files.length} 个文件 · 共 ${formatFileSize(total)}`;
+  const oversized = files.filter((file) => file.size > MAX_FILE_SIZE);
+  if (oversized.length) {
+    fileSelection.textContent = `${summary}；${oversized
+      .map((file) => file.name)
+      .join("、")} 超过 20 兆字节`;
+    fileSelection.className = "form-hint error-message";
+    return;
+  }
+  fileSelection.textContent = `${summary}：${files.map((file) => file.name).join("、")}`;
+  fileSelection.className = "form-hint";
 }
 
 function setUploadProgress(value, label) {
@@ -642,79 +721,146 @@ function finishUpload(hideProgress = true) {
   if (hideProgress) window.setTimeout(resetUploadProgress, 800);
 }
 
-function uploadFile(courseId, event) {
+function uploadOne(courseId, file, title, onProgress) {
+  return new Promise((resolve) => {
+    const form = new FormData();
+    form.append("title", title);
+    form.append("file", file, file.name);
+    const request = new XMLHttpRequest();
+    request.open("POST", `/api/courses/${encodeURIComponent(courseId)}/files`);
+    request.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      onProgress(event.loaded / event.total);
+    });
+    request.addEventListener("load", () => {
+      let body = {};
+      try {
+        body = JSON.parse(request.responseText);
+      } catch (error) {
+        body = {};
+      }
+      if (request.status < 200 || request.status >= 300) {
+        const detail = typeof body.detail === "string" ? body.detail : null;
+        resolve({ ok: false, message: body.error?.message || detail || "上传失败" });
+        return;
+      }
+      resolve({ ok: true, file: body });
+    });
+    request.addEventListener("error", () => resolve({ ok: false, message: "网络异常" }));
+    request.addEventListener("timeout", () => resolve({ ok: false, message: "上传超时" }));
+    request.timeout = 300000;
+    request.send(form);
+  });
+}
+
+function setUploadMessage(text, isError = false) {
+  uploadMessage.textContent = text;
+  uploadMessage.className = isError ? "form-message error-message" : "form-message success-message";
+}
+
+function appendUploadResult(name, ok, detail) {
+  if (!uploadResults) return;
+  const item = document.createElement("li");
+  item.className = ok ? "upload-result-ok" : "upload-result-fail";
+  item.textContent = ok ? `✓ ${name}：${detail}` : `✕ ${name}：${detail}`;
+  uploadResults.append(item);
+}
+
+function titleForFile(file, fallback) {
+  const base = file.name.replace(/\.[^.]+$/, "").trim();
+  return base || fallback || file.name;
+}
+
+async function uploadFiles(courseId, event) {
   event.preventDefault();
   uploadMessage.textContent = "";
   uploadMessage.className = "form-message";
-  const selectedFile = fileInput.files[0];
+  if (uploadResults) uploadResults.innerHTML = "";
+
+  const files = Array.from(fileInput.files || []);
   const title = document.querySelector("#file-title").value.trim();
-  if (!title) {
-    uploadMessage.textContent = "资料标题不能为空。";
-    uploadMessage.className = "form-message error-message";
+  if (!files.length) {
+    setUploadMessage("请选择要上传的文件。", true);
     return;
   }
-  if (!selectedFile) {
-    uploadMessage.textContent = "请选择要上传的文件。";
-    uploadMessage.className = "form-message error-message";
+  if (files.length === 1 && !title) {
+    setUploadMessage("资料标题不能为空。", true);
     return;
   }
-  if (selectedFile.size > MAX_FILE_SIZE) {
-    uploadMessage.textContent = "文件不能超过 20 兆字节。";
-    uploadMessage.className = "form-message error-message";
+  const oversized = files.find((file) => file.size > MAX_FILE_SIZE);
+  if (oversized) {
+    setUploadMessage(`${oversized.name} 超过 20 兆字节。`, true);
     return;
   }
+
   uploadButton.disabled = true;
   uploadButton.textContent = "上传中...";
-  setUploadProgress(0, "准备上传");
-  const request = new XMLHttpRequest();
-  request.open("POST", `/api/courses/${encodeURIComponent(courseId)}/files`);
-  request.upload.addEventListener("progress", (progressEvent) => {
-    if (!progressEvent.lengthComputable) return;
-    const value = Math.round((progressEvent.loaded / progressEvent.total) * 100);
-    setUploadProgress(value, `已上传 ${value}%`);
-  });
-  request.addEventListener("load", async () => {
-    let body = {};
-    try {
-      body = JSON.parse(request.responseText);
-    } catch (error) {
-      body = {};
+  setUploadProgress(0, `准备上传 ${files.length} 个文件`);
+
+  let succeeded = 0;
+  const failures = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const fileTitle = files.length === 1 ? title : titleForFile(file, title);
+    const report = (fraction, suffix) => {
+      const value = Math.round(((index + fraction) / files.length) * 100);
+      setUploadProgress(value, `正在上传 ${index + 1}/${files.length}：${file.name}${suffix}`);
+    };
+    report(0, "");
+    const result = await uploadOne(courseId, file, fileTitle, (fraction) => {
+      report(fraction, `（${Math.round(fraction * 100)}%）`);
+    });
+    if (result.ok) {
+      succeeded += 1;
+      appendUploadResult(file.name, true, "上传成功");
+    } else {
+      failures.push(`${file.name}：${result.message}`);
+      appendUploadResult(file.name, false, result.message);
     }
-    if (request.status < 200 || request.status >= 300) {
-      uploadMessage.textContent = body.error?.message || body.detail || "上传失败，请稍后重试。";
-      uploadMessage.className = "form-message error-message";
-      finishUpload();
-      return;
-    }
-    uploadForm.reset();
-    updateFileSelection();
-    setUploadProgress(100, "上传完成");
-    uploadMessage.textContent = currentUser?.role === "admin"
-      ? "上传成功，资料已发布。"
-      : "上传成功，资料正在等待管理员审核。";
-    uploadMessage.className = "form-message success-message";
+  }
+
+  setUploadProgress(100, "上传完成");
+  if (succeeded) {
     await loadCourseFiles(courseId, 1);
     await refreshCourse();
-    await loadMyUploads(1);
-    finishUpload(false);
+    if (currentUser) await loadMyUploads(1);
+  }
+  if (failures.length) {
+    setUploadMessage(`${succeeded} 个成功，${failures.length} 个失败：${failures.join("；")}`, true);
+  } else {
+    uploadForm.reset();
+    updateFileSelection();
+    setUploadMessage(
+      currentUser?.role === "admin"
+        ? `已上传 ${succeeded} 份资料，全部发布。`
+        : `已上传 ${succeeded} 份资料，正在等待管理员审核。`
+    );
+  }
+  finishUpload(false);
+}
+
+function initDropZone() {
+  if (!dropZone || !fileInput) return;
+  ["dragenter", "dragover"].forEach((type) => {
+    dropZone.addEventListener(type, (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drop-zone-active");
+    });
   });
-  request.addEventListener("error", () => {
-    uploadMessage.textContent = "网络异常，上传失败，请稍后重试。";
-    uploadMessage.className = "form-message error-message";
-    finishUpload();
+  ["dragleave", "drop"].forEach((type) => {
+    dropZone.addEventListener(type, (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("drop-zone-active");
+    });
   });
-  request.addEventListener("abort", () => {
-    uploadMessage.textContent = "上传已取消。";
-    uploadMessage.className = "form-message error-message";
-    finishUpload();
+  dropZone.addEventListener("drop", (event) => {
+    const dropped = event.dataTransfer?.files;
+    if (!dropped || !dropped.length) return;
+    const transfer = new DataTransfer();
+    Array.from(dropped).forEach((file) => transfer.items.add(file));
+    fileInput.files = transfer.files;
+    updateFileSelection();
   });
-  request.addEventListener("timeout", () => {
-    uploadMessage.textContent = "上传超时，请稍后重试。";
-    uploadMessage.className = "form-message error-message";
-    finishUpload();
-  });
-  request.timeout = 120000;
-  request.send(new FormData(uploadForm));
 }
 
 async function createCourse(event) {
@@ -965,6 +1111,8 @@ function renderMyUploadRow(file) {
 
   const actions = document.createElement("div");
   actions.className = "file-actions";
+  const preview = previewButton(file);
+  if (preview) actions.append(preview);
   if (file.status !== "approved") {
     const edit = document.createElement("button");
     edit.type = "button";
@@ -1027,6 +1175,11 @@ function initAuth() {
   loginToggle?.addEventListener("click", toggleLoginPanel);
   logoutButton?.addEventListener("click", logout);
   loginForm?.addEventListener("submit", submitLogin);
+  previewClose?.addEventListener("click", closePreview);
+  previewDialog?.querySelector("[data-preview-close]")?.addEventListener("click", closePreview);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closePreview();
+  });
 }
 
 function initHomePage() {
@@ -1073,8 +1226,9 @@ async function initCoursePage() {
     uploadForm.hidden = true;
     return;
   }
-  uploadForm.addEventListener("submit", (event) => uploadFile(currentCourseId, event));
+  uploadForm.addEventListener("submit", (event) => uploadFiles(currentCourseId, event));
   fileInput.addEventListener("change", updateFileSelection);
+  initDropZone();
   try {
     const response = await fetch(`/api/courses/${encodeURIComponent(currentCourseId)}`);
     if (!response.ok) throw new Error("课程不存在");

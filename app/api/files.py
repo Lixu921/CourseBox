@@ -571,6 +571,66 @@ def download_file(
     )
 
 
+# 只允许确定无法执行脚本的类型内联预览；媒体类型按扩展名推导，
+# 不能使用上传时客户端声明的 mime_type。
+PREVIEW_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".md": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+}
+
+
+@download_router.get("/api/files/{file_id}/preview", include_in_schema=False)
+@download_router.get(
+    "/接口/资料/{file_id}/预览",
+    summary="在线预览资料",
+    operation_id="在线预览资料",
+)
+def preview_file(
+    file_id: int,
+    user: sqlite3.Row | None = Depends(optional_user),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    row = db.execute(
+        "SELECT filename, original_name, status, uploaded_by FROM files WHERE id = ?",
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="资料不存在")
+    if row["status"] != "approved":
+        if user is None or (user["role"] != "admin" and user["id"] != row["uploaded_by"]):
+            raise HTTPException(status_code=404, detail="资料不存在")
+
+    media_type = PREVIEW_MEDIA_TYPES.get(Path(row["original_name"]).suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=415, detail="该文件类型不支持在线预览")
+    path = stored_file_path(row["filename"])
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    headers = {
+        # 强制浏览器按我们声明的类型解析，避免上传内容被当成 HTML 执行。
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "private, max-age=300",
+    }
+    if media_type.startswith("text/"):
+        headers["Content-Security-Policy"] = "default-src 'none'"
+    record_audit(db, user["id"] if user else None, "preview", "file", file_id)
+    db.commit()
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=row["original_name"],
+        content_disposition_type="inline",
+        headers=headers,
+    )
+
+
 @router.get("/api/my-files", include_in_schema=False)
 @router.get(
     "/接口/我的资料",

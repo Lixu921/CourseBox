@@ -60,12 +60,16 @@
           </div>
           <div class="form-field">
             <label for="file-input">选择文件</label>
-            <input id="file-input" name="file" type="file" required>
+            <div id="drop-zone" class="drop-zone">
+              <input id="file-input" name="file" type="file" multiple>
+              <p class="drop-hint">把文件拖到这里，或点击选择（可多选）</p>
+            </div>
             <p id="file-selection" class="form-hint">单个文件不超过 20 兆字节。</p>
           </div>
           <button id="upload-button" class="primary-button" type="submit">上传资料</button>
           <progress id="upload-progress" max="100" value="0" hidden></progress>
           <p id="upload-progress-label" class="form-hint" hidden>准备上传</p>
+          <ul id="upload-results" class="upload-results" aria-live="polite"></ul>
           <p id="upload-message" class="form-message" role="status" aria-live="polite"></p>
         </form>
         <p id="upload-access-note" class="form-hint" hidden></p>
@@ -83,6 +87,19 @@
       </section>
     </div>
   </main>
+  <div id="preview-dialog" class="preview-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <div class="preview-backdrop" data-preview-close></div>
+    <div class="preview-panel">
+      <div class="preview-header">
+        <h2 id="preview-title">资料预览</h2>
+        <div class="preview-actions">
+          <a id="preview-download" class="download-link" href="#" download>下载</a>
+          <button id="preview-close" class="text-button" type="button">关闭</button>
+        </div>
+      </div>
+      <div id="preview-body" class="preview-body"></div>
+    </div>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

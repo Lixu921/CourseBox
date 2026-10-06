@@ -93,6 +93,10 @@ def test_pages_are_available():
     assert 'id="my-uploads-list"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
+    assert 'id="drop-zone"' in course_page.text
+    assert 'id="upload-results"' in course_page.text
+    assert 'id="preview-dialog"' in course_page.text
+    assert "multiple" in course_page.text
     assert 'href="#top"' in homepage.text
     assert 'href="#top"' in course_page.text
 
@@ -1611,3 +1615,87 @@ def test_search_filters_and_sorting(tmp_path, monkeypatch):
         "/接口/搜索", params={"起始时间": "2020-01-01", "结束时间": "2019-01-01"}
     ).status_code == 422
     assert client.get("/接口/搜索", params={"起始时间": "not-a-date"}).status_code == 422
+
+
+def test_file_preview_endpoint(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "预览课程"}).json()
+
+    def upload(title, filename, payload):
+        response = client.post(
+            f"/接口/课程/{course['id']}/资料",
+            data={"title": title},
+            files={"file": (filename, payload, "application/octet-stream")},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    picture = upload("示意图", "示意图.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    document = upload("讲义", "lecture.pdf", b"%PDF-1.4\n%%EOF")
+    archive = upload("压缩包", "bundle.zip", b"PK\x03\x04")
+
+    preview = client.get(f"/接口/资料/{picture['id']}/预览")
+    assert preview.status_code == 200
+    assert preview.headers["content-type"] == "image/png"
+    assert preview.headers["content-disposition"].startswith("inline")
+    assert preview.headers["x-content-type-options"] == "nosniff"
+    assert preview.content.startswith(b"\x89PNG")
+
+    pdf = client.get(f"/接口/资料/{document['id']}/预览")
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.headers["content-disposition"].startswith("inline")
+
+    # 不允许内联预览的类型直接 415，避免把可执行内容塞进浏览器。
+    unsupported = client.get(f"/接口/资料/{archive['id']}/预览")
+    assert unsupported.status_code == 415
+    assert "不支持在线预览" in unsupported.json()["error"]["message"]
+    assert client.get("/接口/资料/99999/预览").status_code == 404
+
+    # 待审核资料只对上传者本人和管理员可见。
+    assert client.post(
+        "/接口/用户",
+        json={"username": "owner", "password": "owner-pass", "role": "uploader"},
+    ).status_code == 201
+    assert client.post(
+        "/接口/用户",
+        json={"username": "stranger", "password": "stranger-pass", "role": "uploader"},
+    ).status_code == 201
+
+    owner = create_client()
+    login_user(owner, "owner", "owner-pass")
+    pending = owner.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "待审草稿"},
+        files={"file": ("draft.png", b"\x89PNG\r\n\x1a\n" + b"1" * 32, "image/png")},
+    ).json()
+    assert pending["status"] == "pending"
+
+    stranger = create_client()
+    login_user(stranger, "stranger", "stranger-pass")
+    assert stranger.get(f"/接口/资料/{pending['id']}/预览").status_code == 404
+    anonymous = create_client()
+    assert anonymous.get(f"/接口/资料/{pending['id']}/预览").status_code == 404
+    assert owner.get(f"/接口/资料/{pending['id']}/预览").status_code == 200
+    assert client.get(f"/接口/资料/{pending['id']}/预览").status_code == 200
+
+    # 预览行为同样写审计日志。
+    import sqlite3
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    actions = [
+        row[0]
+        for row in connection.execute(
+            "SELECT action FROM audit_logs WHERE entity_type = 'file' AND action = 'preview'"
+        )
+    ]
+    # 预览行为同样写审计日志：上面共 4 次成功预览。
+    assert len(actions) == 4
+    connection.close()
