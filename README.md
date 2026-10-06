@@ -66,7 +66,7 @@ $env:COURSEBOX_ADMIN_PASSWORD = "请替换为至少 8 位密码"
 ## 启动项目
 
 ```powershell
-py -m uvicorn app.main:app --port 8000
+py -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Windows 也可以使用启动脚本：
@@ -79,7 +79,7 @@ Windows 也可以使用启动脚本：
 
 在线访问：[课盒子](https://coursebox.onrender.com/)，[在线接口文档](https://coursebox.onrender.com/%E6%8E%A5%E5%8F%A3%E6%96%87%E6%A1%A3)。
 
-本地启动服务后，请在运行服务的电脑上访问：`http://127.0.0.1:8000/`。本地地址只适用于本机访问，不能从 GitHub 页面直接访问。
+本地启动服务后，在运行服务的电脑上可以访问 `http://127.0.0.1:8000/`；同一局域网的同学请访问运行服务电脑的局域网 IPv4 地址，例如 `http://192.168.1.23:8000/`。启动脚本会打印可分享的局域网地址。若同学仍然无法访问，请确认双方连接的是同一个 Wi-Fi/局域网，并在 Windows 防火墙中允许 Python/Uvicorn 接受专用网络的入站连接；校园网可能会阻止设备之间互相访问。
 
 如果需要公网访问，可以[部署到 Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2FLixu921%2FCourseBox)，或先阅读[部署说明](DEPLOY.md)。部署完成后，请使用 Render 分配的 `onrender.com` 地址访问应用。
 
