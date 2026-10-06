@@ -14,6 +14,8 @@ from app.config import (
 # Kept as a compatibility alias for callers that imported the old constant.
 UPLOADS_PATH = uploads_path()
 logger = logging.getLogger("coursebox")
+# 已解锁的登录失败记录保留一天，够用来累计连续失败又不至于无限堆积。
+LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -258,6 +260,19 @@ def purge_login_attempts(connection: sqlite3.Connection, keep_seconds: int) -> i
           AND updated_at < datetime('now', ?)
         """,
         (f"-{keep_seconds} seconds",),
+    )
+    connection.commit()
+    return cursor.rowcount or 0
+
+
+def purge_audit_logs(connection: sqlite3.Connection, retention_days: int) -> int:
+    """删除超过保留期的审计日志；retention_days 不大于 0 时保留全部。"""
+
+    if retention_days <= 0:
+        return 0
+    cursor = connection.execute(
+        "DELETE FROM audit_logs WHERE created_at < datetime('now', ?)",
+        (f"-{retention_days} days",),
     )
     connection.commit()
     return cursor.rowcount or 0

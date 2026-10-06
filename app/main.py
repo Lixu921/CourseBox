@@ -21,7 +21,14 @@ from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router
 from app.api.files import router as files_router
 from app.config import database_path, get_settings, uploads_path
-from app.db import cleanup_staged_files, get_db, init_db
+from app.db import (
+    LOGIN_ATTEMPT_RETENTION_SECONDS,
+    cleanup_staged_files,
+    get_db,
+    init_db,
+    purge_audit_logs,
+    purge_login_attempts,
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -68,6 +75,9 @@ startup_db_generator = get_db()
 startup_db = next(startup_db_generator)
 try:
     cleanup_staged_files(startup_db)
+    startup_settings = get_settings()
+    purge_audit_logs(startup_db, startup_settings.audit_retention_days)
+    purge_login_attempts(startup_db, LOGIN_ATTEMPT_RETENTION_SECONDS)
 finally:
     startup_db_generator.close()
 app.include_router(courses_router)

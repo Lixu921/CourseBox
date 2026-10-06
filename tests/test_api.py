@@ -1127,3 +1127,126 @@ def test_legacy_fts_index_is_rebuilt_with_trigram(tmp_path, monkeypatch):
     client = create_client()
     # 旧索引用的是默认分词器，中文子串命中不了；重建之后必须能搜到。
     assert client.get("/接口/搜索", params={"q": "据结构"}).json()["total"] == 1
+
+
+def quota_client(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    return client
+
+
+def test_upload_blocked_when_course_quota_is_full(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_MAX_COURSE_BYTES", "5")
+    client = quota_client(tmp_path, monkeypatch)
+    course = client.post("/接口/课程", json={"name": "quota"}).json()
+
+    first = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "第一份"},
+        files={"file": ("a.txt", b"12345", "text/plain")},
+    )
+    assert first.status_code == 201
+
+    over = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "超出配额"},
+        files={"file": ("b.txt", b"1", "text/plain")},
+    )
+    assert over.status_code == 413
+    assert "课程资料总量已达上限" in over.json()["error"]["message"]
+    # 被拒绝的上传不能留下孤儿文件。
+    assert len(list((tmp_path / "uploads").glob("*"))) == 1
+
+
+def test_upload_blocked_when_site_quota_is_full(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_MAX_TOTAL_BYTES", "5")
+    client = quota_client(tmp_path, monkeypatch)
+    first_course = client.post("/接口/课程", json={"name": "A"}).json()
+    second_course = client.post("/接口/课程", json={"name": "B"}).json()
+
+    assert client.post(
+        f"/接口/课程/{first_course['id']}/资料",
+        data={"title": "A 的资料"},
+        files={"file": ("a.txt", b"12345", "text/plain")},
+    ).status_code == 201
+
+    over = client.post(
+        f"/接口/课程/{second_course['id']}/资料",
+        data={"title": "B 的资料"},
+        files={"file": ("b.txt", b"1", "text/plain")},
+    )
+    assert over.status_code == 413
+    assert "站点资料总量已达上限" in over.json()["error"]["message"]
+
+
+def test_upload_blocked_when_disk_space_is_low(tmp_path, monkeypatch):
+    # 把最小剩余空间设成 1 PB，必然触发磁盘保护。
+    monkeypatch.setenv("COURSEBOX_MIN_FREE_SPACE", str(10**15))
+    client = quota_client(tmp_path, monkeypatch)
+    course = client.post("/接口/课程", json={"name": "disk"}).json()
+
+    blocked = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "磁盘不足"},
+        files={"file": ("a.txt", b"1", "text/plain")},
+    )
+    assert blocked.status_code == 413
+    assert "磁盘空间不足" in blocked.json()["error"]["message"]
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_audit_logs_are_purged_by_retention(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db, purge_audit_logs
+
+    init_db()
+    connection = sqlite3.connect(tmp_path / "test.db")
+    connection.executescript(
+        """
+        INSERT INTO audit_logs (actor_id, action, entity_type, created_at)
+        VALUES (NULL, 'old', 'file', datetime('now', '-100 days'));
+        INSERT INTO audit_logs (actor_id, action, entity_type, created_at)
+        VALUES (NULL, 'new', 'file', datetime('now'));
+        """
+    )
+    connection.commit()
+
+    assert purge_audit_logs(connection, 90) == 1
+    remaining = [row[0] for row in connection.execute("SELECT action FROM audit_logs")]
+    assert remaining == ["new"]
+
+    # 保留期设为 0 表示全部保留。
+    assert purge_audit_logs(connection, 0) == 0
+    assert connection.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == 1
+    connection.close()
+
+
+def test_maintenance_module_runs(tmp_path, monkeypatch, capsys):
+    import sqlite3
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_AUDIT_RETENTION_DAYS", "1")
+
+    from app import maintenance
+    from app.db import init_db
+
+    init_db()
+    connection = sqlite3.connect(tmp_path / "test.db")
+    connection.execute(
+        "INSERT INTO audit_logs (actor_id, action, entity_type, created_at)"
+        " VALUES (NULL, 'stale', 'file', datetime('now', '-10 days'))"
+    )
+    connection.commit()
+    connection.close()
+
+    assert maintenance.main() == 0
+    assert "已清理 1 条" in capsys.readouterr().out

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
@@ -18,7 +19,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 
 from app.api.auth import optional_user, require_roles
-from app.config import DEFAULT_MAX_FILE_SIZE, allowed_extensions, max_file_size, uploads_path
+from app.config import PROJECT_ROOT, allowed_extensions, get_settings, uploads_path
 from app.db import (
     discard_staged_files,
     get_db,
@@ -75,6 +76,68 @@ MIN_FTS_TERM_LENGTH = 3
 def course_exists(course_id: int, db: sqlite3.Connection) -> bool:
     row = db.execute("SELECT 1 FROM courses WHERE id = ?", (course_id,)).fetchone()
     return row is not None
+
+
+def format_bytes(size: int) -> str:
+    if size >= 1024**3:
+        return f"{size / 1024**3:.1f} GB"
+    if size >= 1024**2:
+        return f"{size / 1024**2:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} 字节"
+
+
+def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
+    """返回本次上传允许的最大字节数与对应的超限提示。
+
+    单文件大小、课程总量、站点总量、磁盘剩余空间四个上限取最紧的一个，
+    这样只需在流式写入时比较一次，超限原因也能准确告诉用户。
+    """
+
+    settings = get_settings()
+    used_total = db.execute("SELECT COALESCE(SUM(size), 0) FROM files").fetchone()[0]
+    used_course = db.execute(
+        "SELECT COALESCE(SUM(size), 0) FROM files WHERE course_id = ?", (course_id,)
+    ).fetchone()[0]
+    candidates = [
+        (
+            settings.max_file_size,
+            f"文件不能超过 {format_bytes(settings.max_file_size)}",
+        )
+    ]
+    if settings.max_total_bytes:
+        candidates.append(
+            (
+                settings.max_total_bytes - used_total,
+                f"站点资料总量已达上限 {format_bytes(settings.max_total_bytes)}，"
+                "请先清理旧资料",
+            )
+        )
+    if settings.max_course_bytes:
+        candidates.append(
+            (
+                settings.max_course_bytes - used_course,
+                f"该课程资料总量已达上限 {format_bytes(settings.max_course_bytes)}，"
+                "请先清理旧资料",
+            )
+        )
+    try:
+        upload_root = uploads_path()
+        # 上传目录可能还没建，退到项目根目录探测同一个磁盘。
+        target = upload_root if upload_root.exists() else PROJECT_ROOT
+        free = shutil.disk_usage(target).free
+        candidates.append(
+            (free - settings.min_free_space, "服务器磁盘空间不足，暂时无法上传")
+        )
+    except OSError as error:
+        # 探测失败时放行，避免因为统计不到磁盘而完全无法上传。
+        logger.warning(
+            "disk space probe failed: %s",
+            error,
+            extra={"event": "disk_check"},
+        )
+    return min(candidates, key=lambda item: item[0])
 
 
 def file_response(row: sqlite3.Row) -> dict:
@@ -262,7 +325,9 @@ async def upload_course_file(
         if content_type in DANGEROUS_MIME_TYPES:
             raise HTTPException(status_code=415, detail="不允许上传可执行文件")
 
-        limit = max_file_size()
+        allowance, limit_reason = upload_allowance(course_id, db)
+        if allowance <= 0:
+            raise HTTPException(status_code=413, detail=limit_reason)
         upload_root = uploads_path().resolve()
         upload_root.mkdir(parents=True, exist_ok=True)
         stored_name = f"{uuid.uuid4().hex}{suffix}"
@@ -275,16 +340,8 @@ async def upload_course_file(
         with stored_path.open("wb") as output:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
-                if size > limit:
-                    detail = (
-                        "文件不能超过 20MB"
-                        if limit == DEFAULT_MAX_FILE_SIZE
-                        else f"文件不能超过 {limit} 字节"
-                    )
-                    raise HTTPException(
-                        status_code=413,
-                        detail=detail,
-                    )
+                if size > allowance:
+                    raise HTTPException(status_code=413, detail=limit_reason)
                 digest.update(chunk)
                 output.write(chunk)
         if size == 0:

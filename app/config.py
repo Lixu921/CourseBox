@@ -19,6 +19,9 @@ PRODUCTION_ENVS = {"production", "prod"}
 MIN_ADMIN_PASSWORD_LENGTH = 8
 DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 DEFAULT_LOGIN_LOCKOUT_SECONDS = 300
+DEFAULT_MAX_COURSE_BYTES = 500 * 1024 * 1024
+DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_AUDIT_RETENTION_DAYS = 90
 
 logger = logging.getLogger("coursebox.config")
 
@@ -103,6 +106,19 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _quota_bytes(name: str, default: int) -> int:
+    """配额配置，0 表示不限制，非法值回退默认值。"""
+
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except (AttributeError, TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
 def _path_from_env(name: str, default: Path) -> Path:
     value = os.getenv(name)
     if not value or not value.strip():
@@ -171,6 +187,9 @@ class Settings:
     cookie_secure: bool
     login_max_attempts: int
     login_lockout_seconds: int
+    max_course_bytes: int
+    max_total_bytes: int
+    audit_retention_days: int
 
     @property
     def is_production(self) -> bool:
@@ -209,5 +228,14 @@ def get_settings() -> Settings:
         ),
         login_lockout_seconds=_positive_int(
             "COURSEBOX_LOGIN_LOCKOUT_SECONDS", DEFAULT_LOGIN_LOCKOUT_SECONDS
+        ),
+        max_course_bytes=_quota_bytes(
+            "COURSEBOX_MAX_COURSE_BYTES", DEFAULT_MAX_COURSE_BYTES
+        ),
+        max_total_bytes=_quota_bytes(
+            "COURSEBOX_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES
+        ),
+        audit_retention_days=_positive_int(
+            "COURSEBOX_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS
         ),
     )
