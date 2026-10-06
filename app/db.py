@@ -427,41 +427,51 @@ def cleanup_staged_files(connection: sqlite3.Connection) -> None:
         )
 
 
+FTS_TABLE_SQL = """
+    CREATE VIRTUAL TABLE files_fts USING fts5(
+        title, original_name, content='files', content_rowid='id', tokenize='trigram'
+    )
+"""
+FTS_TRIGGERS = ("files_fts_after_insert", "files_fts_after_update", "files_fts_after_delete")
+FTS_TRIGGER_SQL = """
+    CREATE TRIGGER IF NOT EXISTS files_fts_after_insert
+    AFTER INSERT ON files BEGIN
+        INSERT INTO files_fts(rowid, title, original_name)
+        VALUES (new.id, new.title, new.original_name);
+    END;
+    CREATE TRIGGER IF NOT EXISTS files_fts_after_update
+    AFTER UPDATE OF title, original_name ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, title, original_name)
+        VALUES ('delete', old.id, old.title, old.original_name);
+        INSERT INTO files_fts(rowid, title, original_name)
+        VALUES (new.id, new.title, new.original_name);
+    END;
+    CREATE TRIGGER IF NOT EXISTS files_fts_after_delete
+    AFTER DELETE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, title, original_name)
+        VALUES ('delete', old.id, old.title, old.original_name);
+    END;
+"""
+
+
 def ensure_fts(connection: sqlite3.Connection) -> bool:
+    """确保全文索引存在；旧版默认分词器无法命中中文子串，需要重建为 trigram。"""
+
     try:
-        existing = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'"
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'"
         ).fetchone()
-        if not existing:
-            connection.execute(
-                """
-                CREATE VIRTUAL TABLE files_fts USING fts5(
-                    title, original_name, content='files', content_rowid='id'
-                )
-                """
-            )
-        connection.executescript(
-            """
-            CREATE TRIGGER IF NOT EXISTS files_fts_after_insert
-            AFTER INSERT ON files BEGIN
-                INSERT INTO files_fts(rowid, title, original_name)
-                VALUES (new.id, new.title, new.original_name);
-            END;
-            CREATE TRIGGER IF NOT EXISTS files_fts_after_update
-            AFTER UPDATE OF title, original_name ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, title, original_name)
-                VALUES ('delete', old.id, old.title, old.original_name);
-                INSERT INTO files_fts(rowid, title, original_name)
-                VALUES (new.id, new.title, new.original_name);
-            END;
-            CREATE TRIGGER IF NOT EXISTS files_fts_after_delete
-            AFTER DELETE ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, title, original_name)
-                VALUES ('delete', old.id, old.title, old.original_name);
-            END;
-            """
-        )
-        if not existing:
+        existing_sql = row["sql"] if row is not None else None
+        needs_create = existing_sql is None
+        if not needs_create and "trigram" not in (existing_sql or "").lower():
+            for trigger in FTS_TRIGGERS:
+                connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            connection.execute("DROP TABLE files_fts")
+            needs_create = True
+        if needs_create:
+            connection.execute(FTS_TABLE_SQL)
+        connection.executescript(FTS_TRIGGER_SQL)
+        if needs_create:
             connection.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
         return True
     except sqlite3.OperationalError:

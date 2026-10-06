@@ -982,3 +982,148 @@ def test_login_success_clears_failure_counter(tmp_path, monkeypatch):
     assert client.post("/接口/登录", json=wrong).status_code == 401
     assert client.post("/接口/登录", json=wrong).status_code == 401
     assert client.post("/接口/登录", json=wrong).status_code == 429
+
+
+def searchable_client(tmp_path, monkeypatch):
+    """建库、建课、上传一份中文名资料，返回 (client, course_id)。"""
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "数据结构"}).json()
+    uploaded = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "数据结构期中复习"},
+        files={"file": ("数据结构期中.pdf", b"hello", "application/pdf")},
+    )
+    assert uploaded.status_code == 201
+    return client, course["id"]
+
+
+def test_search_matches_chinese_substring(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # trigram 分词器支持任意位置的中文子串，不再要求从词首开始。
+    for keyword in ("数据结构", "据结构", "构期中", "期中复习"):
+        response = client.get("/接口/搜索", params={"q": keyword})
+        assert response.status_code == 200, keyword
+        assert response.json()["total"] == 1, keyword
+
+
+def test_short_keyword_falls_back_to_like(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # 少于 3 个字符无法进入 trigram 索引，必须靠 LIKE 兜底。
+    assert client.get("/接口/搜索", params={"q": "数据"}).json()["total"] == 1
+    assert client.get("/接口/搜索", params={"q": "期中"}).json()["total"] == 1
+    assert client.get("/接口/搜索", params={"q": "数学"}).json()["total"] == 0
+
+
+def test_multi_term_search_requires_all_terms(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    assert client.get(
+        "/接口/搜索", params={"q": "数据结构 期中"}
+    ).json()["total"] == 1
+    assert client.get(
+        "/接口/搜索", params={"q": "数据结构 高数"}
+    ).json()["total"] == 0
+
+
+def test_search_escapes_like_wildcards(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # 未转义时 "%中" 会变成通配符匹配到所有资料。
+    assert client.get("/接口/搜索", params={"q": "%中"}).json()["total"] == 0
+    assert client.get("/接口/搜索", params={"q": "_结构"}).json()["total"] == 0
+
+
+def test_search_matches_course_name(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # 资料标题里没有“高等数学”，但课程名匹配同样应该命中。
+    course = client.post("/接口/课程", json={"name": "高等数学"}).json()
+    client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "第一章"},
+        files={"file": ("chapter1.pdf", b"x", "application/pdf")},
+    )
+
+    response = client.get("/接口/搜索", params={"q": "高等数学"})
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["course"]["name"] == "高等数学"
+
+
+def test_search_query_plan_uses_fts_index(tmp_path, monkeypatch):
+    import sqlite3
+
+    client, _ = searchable_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.api.files import build_search_filter
+
+    where, params = build_search_filter("数据结构", use_fts=True)
+    connection = sqlite3.connect(tmp_path / "test.db")
+    try:
+        plan = "\n".join(
+            row[-1]
+            for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT f.id FROM files AS f "
+                "JOIN courses AS c ON c.id = f.course_id "
+                f"WHERE f.status = 'approved' AND ({where})",
+                params,
+            )
+        )
+    finally:
+        connection.close()
+
+    # INDEX 0:M* 表示 MATCH 约束生效；INDEX 0:= 表示退化成整表扫描。
+    assert "files_fts VIRTUAL TABLE INDEX 0:M" in plan, plan
+    assert "INDEX 0:=" not in plan, plan
+
+
+def test_legacy_fts_index_is_rebuilt_with_trigram(tmp_path, monkeypatch):
+    import sqlite3
+
+    database = tmp_path / "legacy.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE courses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, college TEXT, semester TEXT
+        );
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id INTEGER NOT NULL,
+            title TEXT NOT NULL, filename TEXT NOT NULL, original_name TEXT NOT NULL,
+            size INTEGER NOT NULL, upload_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE VIRTUAL TABLE files_fts USING fts5(
+            title, original_name, content='files', content_rowid='id'
+        );
+        INSERT INTO courses (name) VALUES ('数据结构');
+        INSERT INTO files (course_id, title, filename, original_name, size)
+        VALUES (1, '数据结构期中复习', 'old.pdf', '数据结构期中.pdf', 3);
+        """
+    )
+    connection.commit()
+
+    from app.db import init_db
+
+    init_db(connection)
+    index_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'"
+    ).fetchone()[0]
+    assert "trigram" in index_sql.lower()
+    connection.close()
+
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    client = create_client()
+    # 旧索引用的是默认分词器，中文子串命中不了；重建之后必须能搜到。
+    assert client.get("/接口/搜索", params={"q": "据结构"}).json()["total"] == 1

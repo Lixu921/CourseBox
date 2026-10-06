@@ -68,6 +68,8 @@ DANGEROUS_EXTENSIONS = {
     ".wsf",
     ".wsh",
 }
+# FTS5 的 trigram 分词器只索引长度不小于 3 的片段。
+MIN_FTS_TERM_LENGTH = 3
 
 
 def course_exists(course_id: int, db: sqlite3.Connection) -> bool:
@@ -117,10 +119,46 @@ def stored_file_path(filename: str) -> Path | None:
     return path if root in path.parents else None
 
 
-def fts_query(keyword: str) -> str:
-    return " AND ".join(
-        f'"{part.replace(chr(34), "")}"' for part in keyword.split() if part
-    )
+def escape_like(value: str) -> str:
+    """转义 LIKE 通配符，避免用户输入的 % 或 _ 变成通配。"""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def fts_phrase(term: str) -> str:
+    """trigram 分词器下用双引号包住词条即可做任意位置的子串匹配。"""
+
+    return '"{}"'.format(term.replace('"', ""))
+
+
+def build_search_filter(
+    keyword: str, use_fts: bool
+) -> tuple[str, list[object]]:
+    """按空格拆词生成过滤条件：长词走 FTS 索引，短词回退 LIKE，词条之间是 AND。
+
+    trigram 分词器只索引长度不小于 3 的片段，短词无法命中，必须交给 LIKE。
+    """
+
+    clauses: list[str] = []
+    params: list[object] = []
+    for term in keyword.split():
+        if use_fts and len(term) >= MIN_FTS_TERM_LENGTH:
+            clauses.append(
+                "(f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
+                " OR f.course_id IN"
+                " (SELECT id FROM courses WHERE name LIKE ? ESCAPE '\\'))"
+            )
+            params.extend([fts_phrase(term), f"%{escape_like(term)}%"])
+        else:
+            clauses.append(
+                "(LOWER(f.title) LIKE LOWER(?) ESCAPE '\\'"
+                " OR LOWER(f.original_name) LIKE LOWER(?) ESCAPE '\\'"
+                " OR LOWER(c.name) LIKE LOWER(?) ESCAPE '\\')"
+            )
+            params.extend([f"%{escape_like(term)}%"] * 3)
+    if not clauses:
+        return "", []
+    return " AND ".join(clauses), params
 
 
 def remove_stored_file(path: Path | None) -> None:
@@ -448,66 +486,35 @@ def search_files(
     if not keyword:
         return FilePage(**page_response([], 0, page, page_size))
 
-    pattern = f"%{keyword}%"
-    match_query = fts_query(keyword)
-    try:
-        total = db.execute(
-            """
-            SELECT COUNT(*)
-            FROM files_fts AS fts
-            JOIN files AS f ON f.id = fts.rowid
-            JOIN courses AS c ON c.id = f.course_id
-            WHERE f.status = 'approved' AND (fts MATCH ?
-               OR LOWER(f.title) LIKE LOWER(?)
-               OR LOWER(f.original_name) LIKE LOWER(?)
-               OR LOWER(c.name) LIKE LOWER(?))
-            """,
-            (match_query, pattern, pattern, pattern),
-        ).fetchone()[0]
-        rows = db.execute(
-            """
-            SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
-                   f.mime_type, f.sha256, f.status,
-                   c.name AS course_name, c.college, c.semester, f.filename
-            FROM files_fts AS fts
-            JOIN files AS f ON f.id = fts.rowid
-            JOIN courses AS c ON c.id = f.course_id
-            WHERE f.status = 'approved' AND (fts MATCH ?
-               OR LOWER(f.title) LIKE LOWER(?)
-               OR LOWER(f.original_name) LIKE LOWER(?)
-               OR LOWER(c.name) LIKE LOWER(?))
-            ORDER BY f.id DESC LIMIT ? OFFSET ?
-            """,
-            (
-                match_query,
-                pattern,
-                pattern,
-                pattern,
-                page_size,
-                (page - 1) * page_size,
-            ),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        where = """
-            f.status = 'approved' AND (LOWER(f.title) LIKE LOWER(?)
-            OR LOWER(f.original_name) LIKE LOWER(?)
-            OR LOWER(c.name) LIKE LOWER(?))
-        """
-        total = db.execute(
-            "SELECT COUNT(*) FROM files AS f JOIN courses AS c ON c.id = f.course_id "
-            f"WHERE {where}",
-            (pattern, pattern, pattern),
-        ).fetchone()[0]
-        rows = db.execute(
-            f"""
-            SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
-                   f.mime_type, f.sha256, f.status,
-                   c.name AS course_name, c.college, c.semester, f.filename
-            FROM files AS f JOIN courses AS c ON c.id = f.course_id
-            WHERE {where} ORDER BY f.id DESC LIMIT ? OFFSET ?
-            """,
-            (pattern, pattern, pattern, page_size, (page - 1) * page_size),
-        ).fetchall()
+    total = 0
+    rows: list[sqlite3.Row] = []
+    for use_fts in (True, False):
+        where, params = build_search_filter(keyword, use_fts)
+        if not where:
+            break
+        try:
+            total = db.execute(
+                "SELECT COUNT(*) FROM files AS f "
+                "JOIN courses AS c ON c.id = f.course_id "
+                f"WHERE f.status = 'approved' AND ({where})",
+                params,
+            ).fetchone()[0]
+            rows = db.execute(
+                f"""
+                SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
+                       f.mime_type, f.sha256, f.status,
+                       c.name AS course_name, c.college, c.semester, f.filename
+                FROM files AS f JOIN courses AS c ON c.id = f.course_id
+                WHERE f.status = 'approved' AND ({where})
+                ORDER BY f.id DESC LIMIT ? OFFSET ?
+                """,
+                (*params, page_size, (page - 1) * page_size),
+            ).fetchall()
+            break
+        except sqlite3.OperationalError:
+            # 运行环境没有 FTS5 或索引损坏时退回纯 LIKE 搜索。
+            if not use_fts:
+                raise
     return FilePage(
         **page_response([search_response(row) for row in rows], total, page, page_size)
     )
