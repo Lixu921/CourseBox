@@ -8,12 +8,13 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
@@ -125,6 +126,7 @@ def request_error_response(
     status_code: int,
     detail: object,
     message: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
     resolved_message = message or (detail if isinstance(detail, str) else "请求处理失败")
@@ -137,12 +139,19 @@ def request_error_response(
         # Keep detail for existing clients while all new clients can use error.
         "detail": jsonable_encoder(detail),
     }
-    return JSONResponse(status_code=status_code, content=body)
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    return request_error_response(request, exc.status_code, exc.detail)
+# 处理器必须挂在 Starlette 的基类上：路由未命中和静态文件 404 抛的都是基类异常，
+# 只注册 FastAPI 的子类会让这些响应退回默认形状。
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return request_error_response(
+        request,
+        exc.status_code,
+        exc.detail,
+        headers=getattr(exc, "headers", None),
+    )
 
 
 @app.exception_handler(RequestValidationError)

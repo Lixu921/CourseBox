@@ -85,6 +85,8 @@ def test_pages_are_available():
     assert 'id="admin-course-panel"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
+    assert 'href="#top"' in homepage.text
+    assert 'href="#top"' in course_page.text
 
 
 def test_create_and_list_courses(tmp_path, monkeypatch):
@@ -188,6 +190,14 @@ def test_api_errors_have_uniform_shape():
     assert body["error"]["code"] == "not_found"
     assert body["error"]["message"] == "课程不存在"
     assert body["error"]["request_id"] == response.headers["x-request-id"]
+
+    # 路由未命中的 404 也必须走同一套错误结构，不能退回框架默认的 {"detail": "Not Found"}。
+    unmatched = client.get("/不存在的路径")
+    assert unmatched.status_code == 404
+    unmatched_body = unmatched.json()
+    assert unmatched_body["error"]["code"] == "not_found"
+    assert unmatched_body["error"]["message"] == "Not Found"
+    assert unmatched_body["error"]["request_id"] == unmatched.headers["x-request-id"]
 
 
 def test_request_id_and_structured_log(caplog):
