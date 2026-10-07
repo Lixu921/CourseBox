@@ -1,10 +1,15 @@
 import sqlite3
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 
 from app.auth import (
     SESSION_COOKIE,
+    SESSION_TTL,
     new_session_token,
+    session_expiry,
+    session_hard_deadline,
+    session_needs_renewal,
     session_token_hash,
     verify_password,
 )
@@ -25,42 +30,94 @@ def public_user(row: sqlite3.Row) -> User:
     return User(id=row["id"], username=row["username"], role=row["role"])
 
 
+def set_session_cookie(response: Response, token: str) -> None:
+    """写会话 Cookie。登录和滑动续期共用，保证两处参数完全一致。"""
+
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=int(SESSION_TTL.total_seconds()),
+        httponly=True,
+        samesite="lax",
+        secure=get_settings().cookie_secure,
+        path="/",
+    )
+
+
 def find_session_user(
-    session_cookie: str | None, db: sqlite3.Connection
+    session_cookie: str | None,
+    db: sqlite3.Connection,
+    request: Request | None = None,
+    *,
+    renew: bool = True,
 ) -> sqlite3.Row | None:
     if not session_cookie:
         return None
+    token_hash = session_token_hash(session_cookie)
     row = db.execute(
         """
-        SELECT u.id, u.username, u.role
+        SELECT u.id, u.username, u.role, s.expires_at, s.created_at
         FROM sessions AS s
         JOIN users AS u ON u.id = s.user_id
         WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
           AND u.is_active = 1
         """,
-        (session_token_hash(session_cookie),),
+        (token_hash,),
     ).fetchone()
     if row is None:
         db.execute("DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP")
         db.commit()
+        return None
+    # 绝对上限：滑动续期不能把一个会话无限延长下去，到点就作废、要求重新登录。
+    deadline = session_hard_deadline(row["created_at"])
+    if deadline is not None and datetime.now(UTC) >= deadline:
+        db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        db.commit()
+        return None
+    # 滑动续期：只要用户还在半程内活动过，就把有效期推回满值。
+    # 数据库和浏览器 Cookie 必须一起顺延，否则浏览器会先一步把 Cookie 丢掉。
+    # 这里只改数据库；Cookie 由 session_cookie_refresh_middleware 统一补上，
+    # 因为下载/预览接口返回的是 FileResponse，依赖里设的响应头会被框架丢掉。
+    if renew and session_needs_renewal(row["expires_at"]):
+        renewed = session_expiry(deadline)
+        # 已经顶到绝对上限时 renewed 不会更晚，这时不必白写一次数据库。
+        if renewed > row["expires_at"]:
+            db.execute(
+                "UPDATE sessions SET expires_at = ? WHERE token_hash = ?",
+                (renewed, token_hash),
+            )
+            db.commit()
+            if request is not None:
+                request.state.renewed_session_token = session_cookie
     return row
 
 
 def current_user(
+    request: Request,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     db: sqlite3.Connection = Depends(get_db),
 ) -> sqlite3.Row:
-    row = find_session_user(session_cookie, db)
+    row = find_session_user(session_cookie, db, request)
     if row is None:
         raise HTTPException(status_code=401, detail="请先登录")
     return row
 
 
 def optional_user(
+    request: Request,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     db: sqlite3.Connection = Depends(get_db),
 ) -> sqlite3.Row | None:
-    return find_session_user(session_cookie, db)
+    return find_session_user(session_cookie, db, request)
+
+
+def optional_user_no_renew(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    db: sqlite3.Connection = Depends(get_db),
+) -> sqlite3.Row | None:
+    """只查不续。退出登录时用：那一步马上要删会话，续期只会多写一次数据库。"""
+
+    return find_session_user(session_cookie, db, renew=False)
 
 
 def require_roles(*roles: str):
@@ -134,15 +191,7 @@ def login(
     )
     record_audit(db, row["id"], "login", "user", row["id"], "用户登录")
     db.commit()
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        max_age=7 * 24 * 60 * 60,
-        httponly=True,
-        samesite="lax",
-        secure=settings.cookie_secure,
-        path="/",
-    )
+    set_session_cookie(response, token)
     return User(id=row["id"], username=row["username"], role=row["role"])
 
 
@@ -174,7 +223,7 @@ def get_me(user: sqlite3.Row = Depends(current_user)) -> User:
 def logout(
     response: Response,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-    user: sqlite3.Row | None = Depends(optional_user),
+    user: sqlite3.Row | None = Depends(optional_user_no_renew),
     db: sqlite3.Connection = Depends(get_db),
 ) -> None:
     if session_cookie:

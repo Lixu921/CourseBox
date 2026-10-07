@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from urllib.parse import unquote
 
 import pytest
@@ -2583,4 +2584,216 @@ def test_favicon_routes_are_available():
 
     # 浏览器会无条件探测 /favicon.ico，回 204 比 404 干净。
     assert client.get("/favicon.ico").status_code == 204
+
+
+def _age_session(tmp_path, *, days: int) -> sqlite3.Connection:
+    """把当前会话的有效期改到「只剩 days 天」，用来触发滑动续期。"""
+
+    from app.db import configure_connection
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    connection.execute(
+        "UPDATE sessions SET expires_at = datetime('now', ?)", (f"+{days} days",)
+    )
+    connection.commit()
+    return connection
+
+
+def test_active_session_is_renewed(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+
+    # 剩余 1 天 < 一半阈值（3.5 天），下一次请求应该把有效期推回满值。
+    connection = _age_session(tmp_path, days=1)
+    before = connection.execute("SELECT expires_at FROM sessions").fetchone()[0]
+
+    response = client.get("/接口/当前用户")
+    assert response.status_code == 200
+    # 顺延必须同时重发 Cookie，否则浏览器会按旧期限先把 Cookie 丢掉。
+    assert "set-cookie" in response.headers
+
+    after = connection.execute("SELECT expires_at FROM sessions").fetchone()[0]
+    assert after > before
+    remaining = connection.execute(
+        "SELECT julianday(expires_at) - julianday('now') FROM sessions"
+    ).fetchone()[0]
+    assert remaining > 6
+    connection.close()
+
+
+def test_fresh_session_is_not_renewed(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import configure_connection, init_db
+
+    init_db()
+    login_admin(client)
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    before = connection.execute("SELECT expires_at FROM sessions").fetchone()[0]
+
+    response = client.get("/接口/当前用户")
+    assert response.status_code == 200
+    # 刚登录还有整整 7 天，不该每个请求都去改写数据库。
+    assert "set-cookie" not in response.headers
+    after = connection.execute("SELECT expires_at FROM sessions").fetchone()[0]
+    assert after == before
+    connection.close()
+
+
+def test_session_renewal_reaches_file_downloads(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "续期"}).json()
+    uploaded = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "资料"},
+        files={"file": ("note.txt", b"hello", "text/plain")},
+    ).json()
+
+    connection = _age_session(tmp_path, days=1)
+
+    # 下载接口直接返回 FileResponse，FastAPI 不会合并依赖里设的响应头，
+    # 所以续期只能靠最外层中间件补 Set-Cookie。这条用例专门守住这条链路。
+    response = client.get(f"/接口/资料/{uploaded['id']}/下载")
+    assert response.status_code == 200
+    assert "set-cookie" in response.headers
+
+    remaining = connection.execute(
+        "SELECT julianday(expires_at) - julianday('now') FROM sessions"
+    ).fetchone()[0]
+    assert remaining > 6
+    connection.close()
+
+
+def test_logout_clears_session_without_renewing(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+
+    # 会话已到该续期的时候，退出登录也不能顺手把它续上。
+    connection = _age_session(tmp_path, days=1)
+
+    response = client.post("/接口/退出")
+    assert response.status_code == 204
+    cookies = response.headers.get_list("set-cookie")
+    assert len(cookies) == 1
+    assert "Max-Age=0" in cookies[0]
+    assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    connection.close()
+
+
+def test_session_expires_at_absolute_lifetime_cap(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import configure_connection, init_db
+
+    init_db()
+    login_admin(client)
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    # 会话是 31 天前建立的，已越过 30 天绝对上限：再怎么活跃也得重新登录。
+    connection.execute("UPDATE sessions SET created_at = datetime('now', '-31 days')")
+    connection.commit()
+
+    assert client.get("/接口/当前用户").status_code == 401
+    assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    connection.close()
+
+
+def test_renewal_never_passes_absolute_lifetime_cap(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import configure_connection, init_db
+
+    init_db()
+    login_admin(client)
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    # 会话 29 天前建立：还能续，但最多只能续到第 30 天。
+    connection.execute(
+        "UPDATE sessions SET created_at = datetime('now', '-29 days'), "
+        "expires_at = datetime('now', '+1 day')"
+    )
+    connection.commit()
+
+    assert client.get("/接口/当前用户").status_code == 200
+    remaining = connection.execute(
+        "SELECT julianday(expires_at) - julianday('now') FROM sessions"
+    ).fetchone()[0]
+    # 剩余不到 2 天，而不是被续成满 7 天——说明绝对上限确实压住了续期。
+    assert 0 < remaining < 2
+    connection.close()
+
+
+def test_health_probe_cleanup_removes_only_stale_probes(tmp_path, monkeypatch):
+    import os
+    import time as time_module
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(uploads))
+
+    from app.db import cleanup_health_probes
+
+    stale = uploads / ".health-stale"
+    fresh = uploads / ".health-fresh"
+    real_upload = uploads / "3f2a9c1b4d5e6f70"
+    for path in (stale, fresh, real_upload):
+        path.write_bytes(b"")
+
+    two_hours_ago = time_module.time() - 2 * 60 * 60
+    os.utime(stale, (two_hours_ago, two_hours_ago))
+
+    assert cleanup_health_probes() == 1
+    assert not stale.exists()
+    # 一小时内的探针可能正属于正在进行的健康检查，不能删。
+    assert fresh.exists()
+    # 真正的上传文件用的是随机名、不以点开头，永远不碰。
+    assert real_upload.exists()
+
+
+def test_health_check_survives_probe_cleanup_failure(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    client = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+
+    # Windows 上杀毒软件会短暂锁住刚创建的文件，让删除抛 PermissionError。
+    # 那只是清理失败，不该把实例判成不健康。
+    def broken_unlink(self, *args, **kwargs):
+        raise PermissionError(13, "文件被占用")
+
+    monkeypatch.setattr(Path, "unlink", broken_unlink)
+
+    body = client.get("/接口/健康").json()
+    assert body["checks"]["uploads"]["status"] == "ok"
+
 

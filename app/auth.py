@@ -6,7 +6,15 @@ from datetime import UTC, datetime, timedelta
 
 PASSWORD_ITERATIONS = 310_000
 SESSION_TTL = timedelta(days=7)
+# 滑动续期：剩余有效期掉到一半以下才顺延，避免每个请求都写一次数据库。
+# 结果是「只要用户在半程内来过一次，登录就不会掉」。
+SESSION_RENEW_AFTER = SESSION_TTL / 2
+# 绝对上限：从会话建立那一刻算起。光有滑动续期的话，一个天天来的会话可以无限延长；
+# 有了上限，即使一直被续期，30 天后也必然要重新登录一次。
+SESSION_MAX_LIFETIME = timedelta(days=30)
 SESSION_COOKIE = "coursebox_session"
+# sessions.expires_at 在库里统一用这个格式存（SQLite 的 CURRENT_TIMESTAMP 同款）。
+SESSION_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def hash_password(password: str) -> str:
@@ -36,14 +44,54 @@ def verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def parse_session_time(value: object) -> datetime | None:
+    """把库里的时间字符串读成 aware datetime；读不出来返回 None。"""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, SESSION_TIME_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def session_expiry(limit: datetime | None = None) -> str:
+    """新的会话过期时间（UTC 字符串，和库里的比较方式保持一致）。
+
+    传了 limit 就是绝对上限：续期最多续到那里，不会越过。
+    """
+
+    deadline = datetime.now(UTC) + SESSION_TTL
+    if limit is not None and deadline > limit:
+        deadline = limit
+    return deadline.strftime(SESSION_TIME_FORMAT)
+
+
+def session_hard_deadline(created_at: object) -> datetime | None:
+    """会话的绝对上限（建立时间 + SESSION_MAX_LIFETIME）。"""
+
+    created = parse_session_time(created_at)
+    return None if created is None else created + SESSION_MAX_LIFETIME
+
+
 def new_session_token() -> tuple[str, str, str]:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-    expires_at = (datetime.now(UTC) + SESSION_TTL).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    return token, token_hash, expires_at
+    return token, token_hash, session_expiry()
 
 
 def session_token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def session_needs_renewal(expires_at: object) -> bool:
+    """剩余有效期是否已经掉到阈值以下，需要顺延。
+
+    读不出时间（老数据、格式异常）时返回 True：宁可多续一次，也不要把
+    还能用的会话当成「不需要续」。
+    """
+
+    deadline = parse_session_time(expires_at)
+    if deadline is None:
+        return True
+    return deadline - datetime.now(UTC) < SESSION_RENEW_AFTER

@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
@@ -552,6 +553,53 @@ def cleanup_staged_files(connection: sqlite3.Connection) -> None:
             error,
             extra={"event": "file_cleanup"},
         )
+
+
+# 健康检查的探针文件名前缀。正常情况下建完立刻删掉，只有在删除被占用而失败时
+# 才会残留（Windows 上杀毒软件/同步盘偶尔会短暂锁住刚创建的文件）。
+HEALTH_PROBE_PREFIX = ".health-"
+# 只清理一小时前的探针，避免把正在进行的健康检查自己的文件删掉。
+HEALTH_PROBE_MAX_AGE_SECONDS = 60 * 60
+
+
+def cleanup_health_probes(
+    max_age_seconds: int = HEALTH_PROBE_MAX_AGE_SECONDS,
+) -> int:
+    """清掉健康检查遗留的探针文件，返回删除个数。
+
+    只匹配「以 .health- 开头 + 普通文件 + 修改时间超过一小时」这三条同时成立
+    的条目。上传落盘用的是随机文件名、不以点开头，所以不会误删用户资料。
+    """
+
+    directory = uploads_path()
+    if not directory.is_dir():
+        return 0
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    try:
+        entries = list(directory.iterdir())
+    except OSError as error:
+        logger.warning(
+            "health probe scan failed: %s",
+            error,
+            extra={"event": "file_cleanup"},
+        )
+        return 0
+    for entry in entries:
+        if not entry.name.startswith(HEALTH_PROBE_PREFIX):
+            continue
+        try:
+            if not entry.is_file() or entry.stat().st_mtime > cutoff:
+                continue
+            entry.unlink()
+            removed += 1
+        except OSError as error:
+            logger.warning(
+                "health probe cleanup failed: %s",
+                error,
+                extra={"event": "file_cleanup"},
+            )
+    return removed
 
 
 FTS_TABLE_SQL = """

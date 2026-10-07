@@ -19,13 +19,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
+from app.api.auth import set_session_cookie
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router, trash_router
 from app.api.files import router as files_router
 from app.api.users import router as users_router
 from app.config import database_path, get_settings, uploads_path
 from app.db import (
+    HEALTH_PROBE_PREFIX,
     LOGIN_ATTEMPT_RETENTION_SECONDS,
+    cleanup_health_probes,
     cleanup_staged_files,
     get_db,
     init_db,
@@ -80,6 +83,8 @@ startup_db_generator = get_db()
 startup_db = next(startup_db_generator)
 try:
     cleanup_staged_files(startup_db)
+    # 健康检查的探针文件正常建完就删，删不掉时会残留，启动时顺手清一遍。
+    cleanup_health_probes()
     startup_settings = get_settings()
     purge_audit_logs(startup_db, startup_settings.audit_retention_days)
     purge_login_attempts(startup_db, LOGIN_ATTEMPT_RETENTION_SECONDS)
@@ -228,6 +233,23 @@ async def request_logging_middleware(request: Request, call_next):
                 "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             },
         )
+
+
+@app.middleware("http")
+async def session_cookie_refresh_middleware(request: Request, call_next):
+    """把「会话已顺延」这件事真正写进响应。
+
+    滑动续期的判断和数据库更新在 current_user / optional_user 里完成，那里只往
+    request.state 上记一笔。原因是下载、预览、打包这几个接口直接返回 FileResponse，
+    而 FastAPI 对「端点自己返回 Response」的分支不会合并依赖里设的响应头，
+    在依赖里 set_cookie 会被静默丢掉。放到最外层统一补，才能覆盖所有响应类型。
+    """
+
+    response = await call_next(request)
+    token = getattr(request.state, "renewed_session_token", None)
+    if token:
+        set_session_cookie(response, token)
+    return response
 
 
 def error_code(status_code: int) -> str:
@@ -433,18 +455,40 @@ def check_database() -> dict:
 
 
 def check_uploads_directory() -> dict:
+    """确认上传目录真的可写。
+
+    这里会真的建一个临时文件再删掉——只看目录权限位挡不住「只读挂载 / 磁盘写满」。
+    但删除失败不算不健康：Windows 上杀毒软件偶尔会短暂占住刚建好的文件，
+    为这个把整个实例判成不健康不划算。残留的探针交给启动时的
+    cleanup_health_probes 兜底清理。
+    """
+
     path = uploads_path()
     try:
         path.mkdir(parents=True, exist_ok=True)
         if not path.is_dir():
             return {"status": "error", "message": "上传目录不是文件夹"}
-        probe = tempfile.NamedTemporaryFile(dir=path, prefix=".health-", delete=False)
-        probe_path = Path(probe.name)
-        probe.close()
-        probe_path.unlink(missing_ok=True)
-        return {"status": "ok"}
     except OSError as error:
         return {"status": "error", "message": str(error)}
+
+    try:
+        probe = tempfile.NamedTemporaryFile(
+            dir=path, prefix=HEALTH_PROBE_PREFIX, delete=False
+        )
+        probe_path = Path(probe.name)
+        probe.close()
+    except OSError as error:
+        return {"status": "error", "message": str(error)}
+
+    try:
+        probe_path.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning(
+            "health probe cleanup failed: %s",
+            error,
+            extra={"event": "health_check", "request_id": None},
+        )
+    return {"status": "ok"}
 
 
 def check_disk_space() -> dict:
