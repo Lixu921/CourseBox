@@ -78,6 +78,9 @@ const auditFilterKeyword = document.querySelector("#audit-filter-keyword");
 const auditFilterAction = document.querySelector("#audit-filter-action");
 const auditFilterEntity = document.querySelector("#audit-filter-entity");
 const auditFilterButton = document.querySelector("#audit-filter-button");
+const exportFilesButton = document.querySelector("#export-files");
+const exportAuditButton = document.querySelector("#export-audit");
+const exportMessage = document.querySelector("#export-message");
 const trashPanel = document.querySelector("#trash-panel");
 const trashList = document.querySelector("#trash-list");
 const trashPagination = document.querySelector("#trash-pagination");
@@ -848,12 +851,60 @@ function downloadArchive(ids) {
   link.remove();
 }
 
+function setExportMessage(message, isError = false) {
+  if (!exportMessage) return;
+  exportMessage.textContent = message;
+  exportMessage.className = isError ? "form-message error-message" : "form-message";
+}
+
+// CSV 导出走 fetch + blob，而不是像打包下载那样直接导航：导出会失败
+// （比如结果超过行数上限），失败时接口返回的是 JSON，直接导航会让浏览器把
+// 一坨 JSON 显示出来。CSV 有行数上限，体积可控，堆进内存没问题。
+async function saveCsv(response, filename) {
+  if (!response.ok) throw new Error(await readError(response, "导出失败。"));
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+  setExportMessage("已开始下载。");
+}
+
+async function exportCourseFiles() {
+  if (!currentCourseId) return;
+  setExportMessage("正在导出...");
+  try {
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(currentCourseId)}/files/export`
+    );
+    const course = currentCourse?.name || "课程";
+    await saveCsv(response, `${course}-资料清单.csv`);
+  } catch (error) {
+    setExportMessage(error.message || "导出失败。", true);
+  }
+}
+
+async function exportAuditLogs() {
+  setExportMessage("正在导出...");
+  try {
+    // 用与列表完全相同的筛选条件，否则「列表 30 条、导出 12 条」会让人怀疑数据。
+    const response = await fetch(`/api/audit/export?${auditFilterParams()}`);
+    await saveCsv(response, "操作记录.csv");
+  } catch (error) {
+    setExportMessage(error.message || "导出失败。", true);
+  }
+}
+
 function initArchiveControls() {
   if (!fileToolbar) return;
   archiveSelectedButton?.addEventListener("click", () => {
     if (selectedFileIds.size) downloadArchive([...selectedFileIds]);
   });
   archiveAllButton?.addEventListener("click", () => downloadArchive([]));
+  exportFilesButton?.addEventListener("click", exportCourseFiles);
   fileSelectAll?.addEventListener("change", () => {
     // 「全选」只作用于当前这一页，已经跨页选中的资料不会被清掉。
     if (fileSelectAll.checked) currentFileIds.forEach((id) => selectedFileIds.add(id));
@@ -1370,7 +1421,15 @@ async function loadAudit(page = 1) {
 }
 
 function auditQuery(page) {
-  const params = new URLSearchParams({ page: String(page), page_size: "10" });
+  const params = auditFilterParams();
+  params.set("page", String(page));
+  params.set("page_size", "10");
+  return params;
+}
+
+// 审计的筛选条件。列表与导出共用，避免两边规则走偏。
+function auditFilterParams() {
+  const params = new URLSearchParams();
   const keyword = auditFilterKeyword.value.trim();
   if (keyword) params.set("关键词", keyword);
   if (auditFilterAction.value) params.set("动作", auditFilterAction.value);
@@ -1924,6 +1983,7 @@ function initHomePage() {
     loadUsers(1);
   });
   auditFilterButton?.addEventListener("click", () => loadAudit(1));
+  exportAuditButton?.addEventListener("click", exportAuditLogs);
   auditFilterAction?.addEventListener("change", () => loadAudit(1));
   auditFilterEntity?.addEventListener("change", () => loadAudit(1));
   auditFilterKeyword?.addEventListener("keydown", (event) => {

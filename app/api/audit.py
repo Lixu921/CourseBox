@@ -8,11 +8,13 @@ import sqlite3
 from datetime import timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.api.auth import require_roles
 from app.api.common import escape_like, page_response, parse_date
-from app.db import get_db
+from app.config import get_settings
+from app.csv_export import csv_response
+from app.db import get_db, record_audit
 from app.schemas import AuditLog, AuditLogPage
 
 router = APIRouter(tags=["审计"])
@@ -32,8 +34,29 @@ AuditAction = Literal[
     # 资料审核写入的动作就是审核结果本身，之前没列进来，导致按动作筛不到审核记录。
     "approved",
     "rejected",
+    # 导出 CSV 本身也要留痕，否则「谁把整库清单带走了」查不到。
+    "export",
 ]
-AuditEntity = Literal["course", "file", "user"]
+AuditEntity = Literal["course", "file", "user", "audit"]
+
+# 导出的 CSV 里给人看的动作名。新增动作忘记登记时退回原始英文值，
+# 不会因为缺一个键就整个导出失败。
+ACTION_LABELS = {
+    "create": "新建",
+    "update": "修改",
+    "delete": "删除",
+    "download": "下载",
+    "preview": "预览",
+    "login": "登录",
+    "logout": "退出登录",
+    "reset_password": "重置密码",
+    "restore": "从回收站恢复",
+    "purge": "彻底删除",
+    "approved": "审核通过",
+    "rejected": "审核拒绝",
+    "export": "导出",
+}
+ENTITY_LABELS = {"course": "课程", "file": "资料", "user": "用户", "audit": "审计"}
 
 AUDIT_COLUMNS = """
     a.id, a.actor_id, a.action, a.entity_type, a.entity_id, a.detail, a.created_at,
@@ -54,6 +77,53 @@ def audit_response(row: sqlite3.Row) -> AuditLog:
     )
 
 
+def build_audit_filter(
+    keyword: str,
+    action: str | None,
+    entity: str | None,
+    start_text: str | None,
+    end_text: str | None,
+) -> tuple[str, list[object]]:
+    """把列表与导出共用的筛选条件拼成 (where, params)。
+
+    两个接口必须用同一套规则，否则「列表里看到 30 条、导出却是 12 条」这种
+    对不上的现象会让人怀疑数据本身有问题。
+    """
+
+    conditions: list[str] = []
+    params: list[object] = []
+
+    keyword = keyword.strip()
+    if keyword:
+        pattern = f"%{escape_like(keyword)}%"
+        conditions.append(
+            "(u.username LIKE ? ESCAPE '\\' OR a.detail LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern])
+    if action is not None:
+        conditions.append("a.action = ?")
+        params.append(action)
+    if entity is not None:
+        conditions.append("a.entity_type = ?")
+        params.append(entity)
+
+    # created_at 由 SQLite 的 CURRENT_TIMESTAMP 写入，是 UTC 时间，这里按 UTC 日期比较。
+    # 结束日期取次日零点做开区间，才能覆盖当天全部记录。
+    start = parse_date(start_text, "起始时间")
+    end = parse_date(end_text, "结束时间")
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=422, detail="起始时间不能晚于结束时间")
+    if start is not None:
+        conditions.append("a.created_at >= ?")
+        params.append(f"{start.isoformat()} 00:00:00")
+    if end is not None:
+        conditions.append("a.created_at < ?")
+        params.append(f"{(end + timedelta(days=1)).isoformat()} 00:00:00")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where, params
+
+
 @router.get("/api/audit", include_in_schema=False)
 @router.get(
     "/接口/审计",
@@ -72,37 +142,7 @@ def list_audit_logs(
     user: sqlite3.Row = Depends(require_roles("admin")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> AuditLogPage:
-    conditions: list[str] = []
-    params: list[object] = []
-
-    keyword = 关键词.strip()
-    if keyword:
-        pattern = f"%{escape_like(keyword)}%"
-        conditions.append(
-            "(u.username LIKE ? ESCAPE '\\' OR a.detail LIKE ? ESCAPE '\\')"
-        )
-        params.extend([pattern, pattern])
-    if 动作 is not None:
-        conditions.append("a.action = ?")
-        params.append(动作)
-    if 对象 is not None:
-        conditions.append("a.entity_type = ?")
-        params.append(对象)
-
-    # created_at 由 SQLite 的 CURRENT_TIMESTAMP 写入，是 UTC 时间，这里按 UTC 日期比较。
-    # 结束日期取次日零点做开区间，才能覆盖当天全部记录。
-    start = parse_date(起始时间, "起始时间")
-    end = parse_date(结束时间, "结束时间")
-    if start is not None and end is not None and start > end:
-        raise HTTPException(status_code=422, detail="起始时间不能晚于结束时间")
-    if start is not None:
-        conditions.append("a.created_at >= ?")
-        params.append(f"{start.isoformat()} 00:00:00")
-    if end is not None:
-        conditions.append("a.created_at < ?")
-        params.append(f"{(end + timedelta(days=1)).isoformat()} 00:00:00")
-
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where, params = build_audit_filter(关键词, 动作, 对象, 起始时间, 结束时间)
     # 操作人可能已被删除（actor_id 会被置为 NULL），所以用 LEFT JOIN。
     join = "LEFT JOIN users AS u ON u.id = a.actor_id"
 
@@ -121,3 +161,64 @@ def list_audit_logs(
     return AuditLogPage(
         **page_response([audit_response(row) for row in rows], total, page, page_size)
     )
+
+
+@router.get("/api/audit/export", include_in_schema=False)
+@router.get(
+    "/接口/审计导出",
+    summary="导出操作记录（CSV）",
+    operation_id="导出操作记录",
+)
+def export_audit_logs(
+    关键词: str = Query("", max_length=80, description="按操作人或操作详情筛选"),
+    动作: AuditAction | None = Query(None, description="按动作筛选"),
+    对象: AuditEntity | None = Query(None, description="按对象类型筛选"),
+    起始时间: str | None = Query(None, description="不早于该日期（YYYY-MM-DD）"),
+    结束时间: str | None = Query(None, description="不晚于该日期（YYYY-MM-DD）"),
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    where, params = build_audit_filter(关键词, 动作, 对象, 起始时间, 结束时间)
+    limit = get_settings().export_max_rows
+    rows = db.execute(
+        f"""
+        SELECT {AUDIT_COLUMNS}
+        FROM audit_logs AS a LEFT JOIN users AS u ON u.id = a.actor_id
+        {where} ORDER BY a.id DESC LIMIT ?
+        """,  # noqa: S608 - 条件由内部白名单拼接
+        (*params, limit + 1),
+    ).fetchall()
+    # 多取一条来判断有没有超限。超限时报错而不是截断：被截断的清单最危险的地方
+    # 是它看起来是完整的，拿去做合规材料会出事。
+    if len(rows) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"匹配的操作记录超过 {limit} 条，请先用筛选条件缩小范围再导出",
+        )
+
+    record_audit(
+        db,
+        user["id"],
+        "export",
+        "audit",
+        None,
+        f"导出操作记录 {len(rows)} 条",
+    )
+    db.commit()
+    return csv_response(
+        "操作记录.csv",
+        ("编号", "时间", "操作人", "动作", "对象", "对象编号", "详情"),
+        (
+            (
+                row["id"],
+                row["created_at"],
+                row["actor_name"] or "（账户已删除）",
+                ACTION_LABELS.get(row["action"], row["action"]),
+                ENTITY_LABELS.get(row["entity_type"], row["entity_type"]),
+                row["entity_id"] if row["entity_id"] is not None else "",
+                row["detail"] or "",
+            )
+            for row in rows
+        ),
+    )
+

@@ -29,6 +29,9 @@ DEFAULT_TRASH_RETENTION_DAYS = 30
 # 只用来挡住脚本级的突发流量，避免误伤多人共用同一个出口 IP 的校园网。
 DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_PER_MINUTE = 300
+# 单次 CSV 导出的行数上限。超过就报错让用户先用筛选条件缩小范围，
+# 而不是悄悄截断——被截断的清单最危险的地方是它看起来是完整的。
+DEFAULT_EXPORT_MAX_ROWS = 5000
 
 logger = logging.getLogger("coursebox.config")
 
@@ -213,6 +216,7 @@ class Settings:
     trash_retention_days: int
     rate_limit_enabled: bool
     rate_limit_per_minute: int
+    export_max_rows: int
 
     @property
     def is_production(self) -> bool:
@@ -269,5 +273,8 @@ def get_settings() -> Settings:
         ),
         rate_limit_per_minute=_positive_int(
             "COURSEBOX_RATE_LIMIT_PER_MINUTE", DEFAULT_RATE_LIMIT_PER_MINUTE
+        ),
+        export_max_rows=_positive_int(
+            "COURSEBOX_EXPORT_MAX_ROWS", DEFAULT_EXPORT_MAX_ROWS
         ),
     )

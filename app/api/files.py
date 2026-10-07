@@ -18,6 +18,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -27,6 +28,7 @@ from starlette.background import BackgroundTask
 from app.api.auth import current_user, optional_user, require_roles
 from app.api.common import escape_like, page_response, parse_date
 from app.config import PROJECT_ROOT, allowed_extensions, get_settings, uploads_path
+from app.csv_export import csv_response
 from app.db import (
     discard_staged_files,
     get_db,
@@ -48,6 +50,12 @@ from app.schemas import (
 
 router = APIRouter(tags=["资料"])
 logger = logging.getLogger("coursebox")
+# 导出 CSV 里给人看的状态名。REVIEW_LABELS 只覆盖审核结果，这里补上 pending。
+REVIEW_STATUS_LABELS = {
+    "pending": "待审核",
+    "approved": "已通过",
+    "rejected": "已拒绝",
+}
 DANGEROUS_MIME_TYPES = {
     "application/vnd.microsoft.portable-executable",
     "application/x-bat",
@@ -404,6 +412,91 @@ def list_course_files(
     ).fetchall()
     return FilePage(
         **page_response([file_response(row) for row in rows], total, page, page_size)
+    )
+
+
+@router.get("/api/courses/{course_id}/files/export", include_in_schema=False)
+@router.get(
+    "/接口/课程/{course_id}/资料导出",
+    summary="导出课程资料清单（CSV）",
+    operation_id="导出课程资料清单",
+)
+def export_course_files(
+    course_id: int,
+    user: sqlite3.Row | None = Depends(optional_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    if not course_exists(course_id, db):
+        raise HTTPException(status_code=404, detail="课程不存在")
+
+    # 与「查看课程资料」用同一套可见性规则：访客只能导出已通过的，
+    # 上传者额外带上自己的待审资料，管理员全部可见。能翻页看到的东西，
+    # 导出也不该多给，否则这个接口就成了绕过审核的后门。
+    visibility, visibility_params = file_visibility(user)
+    limit = get_settings().export_max_rows
+    rows = db.execute(
+        f"""
+        SELECT f.id, f.title, f.original_name, f.size, f.upload_time,
+               f.status, f.sha256, u.username AS uploader_name
+        FROM files AS f LEFT JOIN users AS u ON u.id = f.uploaded_by
+        WHERE f.course_id = ? AND {visibility}
+        ORDER BY f.id DESC LIMIT ?
+        """,  # noqa: S608 - 可见性片段来自内部常量
+        [course_id, *visibility_params, limit + 1],
+    ).fetchall()
+    # 多取一条判断是否超限。超限就报错而不是悄悄截断——看起来完整、
+    # 实际少了一半的清单比没有清单更危险。
+    if len(rows) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"该课程资料超过 {limit} 条，无法一次导出，请分批整理",
+        )
+
+    course = db.execute(
+        "SELECT name, college, semester FROM courses WHERE id = ?", (course_id,)
+    ).fetchone()
+    if user is not None:
+        record_audit(
+            db,
+            user["id"],
+            "export",
+            "course",
+            course_id,
+            f"导出课程资料清单：{course['name']}（{len(rows)} 条）",
+        )
+        db.commit()
+
+    return csv_response(
+        f"{course['name']}-资料清单.csv",
+        (
+            "资料编号",
+            "标题",
+            "文件名",
+            "大小(字节)",
+            "上传时间",
+            "状态",
+            "上传者",
+            "校验值(sha256)",
+            "课程名",
+            "学院",
+            "学期",
+        ),
+        (
+            (
+                row["id"],
+                row["title"],
+                row["original_name"],
+                row["size"],
+                row["upload_time"],
+                REVIEW_STATUS_LABELS.get(row["status"], row["status"]),
+                row["uploader_name"] or "（账户已删除）",
+                row["sha256"] or "",
+                course["name"],
+                course["college"] or "",
+                course["semester"] or "",
+            )
+            for row in rows
+        ),
     )
 
 

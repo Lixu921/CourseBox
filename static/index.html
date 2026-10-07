@@ -232,6 +232,7 @@
           <option value="purge">彻底删除</option>
           <option value="approved">审核通过</option>
           <option value="rejected">审核拒绝</option>
+          <option value="export">导出</option>
         </select>
         <label class="sr-only" for="audit-filter-entity">按对象筛选</label>
         <select id="audit-filter-entity">
@@ -239,9 +240,12 @@
           <option value="course">课程</option>
           <option value="file">资料</option>
           <option value="user">用户</option>
+          <option value="audit">审计</option>
         </select>
         <button id="audit-filter-button" class="text-button" type="button">筛选</button>
+        <button id="export-audit" class="text-button" type="button">导出 CSV</button>
       </div>
+      <p id="export-message" class="form-message" aria-live="polite"></p>
       <ul id="audit-list" class="user-list" aria-live="polite">
         <li class="state-message">正在加载操作记录...</li>
       </ul>
