@@ -163,6 +163,24 @@
         </select>
         <button id="user-filter-button" class="text-button" type="button">筛选</button>
       </div>
+      <div id="user-batch-toolbar" class="file-toolbar">
+        <label class="checkbox-field">
+          <input id="user-select-all" type="checkbox">
+          <span>全选本页</span>
+        </label>
+        <span id="user-selection-count" class="muted"></span>
+        <button id="user-batch-enable" class="text-button" type="button" disabled>批量启用</button>
+        <button id="user-batch-disable" class="text-button" type="button" disabled>批量停用</button>
+        <label class="sr-only" for="user-batch-role">批量设置角色</label>
+        <select id="user-batch-role" disabled>
+          <option value="">批量改角色…</option>
+          <option value="admin">管理员</option>
+          <option value="uploader">上传者</option>
+          <option value="viewer">浏览者</option>
+        </select>
+        <button id="user-batch-role-apply" class="text-button" type="button" disabled>应用角色</button>
+      </div>
+      <p id="user-batch-message" class="form-message" role="status" aria-live="polite"></p>
       <ul id="user-list" class="user-list" aria-live="polite">
         <li class="state-message">正在加载用户...</li>
       </ul>

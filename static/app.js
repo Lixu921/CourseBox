@@ -18,6 +18,8 @@ const fileSelectAll = document.querySelector("#file-select-all");
 const fileSelectionCount = document.querySelector("#file-selection-count");
 const archiveSelectedButton = document.querySelector("#archive-selected");
 const archiveAllButton = document.querySelector("#archive-all");
+const batchApproveButton = document.querySelector("#batch-approve");
+const batchRejectButton = document.querySelector("#batch-reject");
 const courseActions = document.querySelector("#course-actions");
 const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
@@ -54,6 +56,14 @@ const userPagination = document.querySelector("#user-pagination");
 const userFilterKeyword = document.querySelector("#user-filter-keyword");
 const userFilterRole = document.querySelector("#user-filter-role");
 const userFilterButton = document.querySelector("#user-filter-button");
+const userBatchToolbar = document.querySelector("#user-batch-toolbar");
+const userSelectAll = document.querySelector("#user-select-all");
+const userSelectionCount = document.querySelector("#user-selection-count");
+const userBatchEnable = document.querySelector("#user-batch-enable");
+const userBatchDisable = document.querySelector("#user-batch-disable");
+const userBatchRole = document.querySelector("#user-batch-role");
+const userBatchRoleApply = document.querySelector("#user-batch-role-apply");
+const userBatchMessage = document.querySelector("#user-batch-message");
 const myUploadsPanel = document.querySelector("#my-uploads-panel");
 const myUploadsList = document.querySelector("#my-uploads-list");
 const myUploadsCount = document.querySelector("#my-uploads-count");
@@ -114,6 +124,9 @@ let currentSearchQuery = "";
 // 课程页里被勾选、准备打包下载的资料编号，以及当前这一页的资料编号。
 const selectedFileIds = new Set();
 let currentFileIds = [];
+// 用户管理里被勾选的用户编号。翻页时清空，避免误操作到看不见的行。
+const selectedUserIds = new Set();
+let currentUserIds = [];
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -215,6 +228,8 @@ function updateAuthUI() {
   if (myUploadsPanel) myUploadsPanel.hidden = !currentUser;
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
+  // 登录/登出会改变「批量审核」按钮该不该出现，重新同步一次勾选状态。
+  syncFileSelection();
   ensureUserPanelLoaded();
   ensureAuditLoaded();
   ensureTrashLoaded();
@@ -650,6 +665,13 @@ function syncFileSelection() {
   const count = selectedFileIds.size;
   if (fileSelectionCount) fileSelectionCount.textContent = count ? `已选 ${count} 份` : "";
   if (archiveSelectedButton) archiveSelectedButton.disabled = count === 0;
+  // 批量审核只有管理员能用，普通访客连按钮都不显示。
+  const isAdmin = currentUser?.role === "admin";
+  [batchApproveButton, batchRejectButton].forEach((button) => {
+    if (!button) return;
+    button.hidden = !isAdmin;
+    button.disabled = count === 0;
+  });
   if (fileSelectAll) {
     const onPage = currentFileIds.filter((id) => selectedFileIds.has(id)).length;
     fileSelectAll.checked = currentFileIds.length > 0 && onPage === currentFileIds.length;
@@ -692,6 +714,30 @@ function initArchiveControls() {
     });
     syncFileSelection();
   });
+  batchApproveButton?.addEventListener("click", () => batchReviewFiles("approved"));
+  batchRejectButton?.addEventListener("click", () => batchReviewFiles("rejected"));
+}
+
+async function batchReviewFiles(status) {
+  const ids = [...selectedFileIds];
+  if (!ids.length) return;
+  const action = status === "approved" ? "通过" : "拒绝";
+  if (!window.confirm(`确定${action}选中的 ${ids.length} 份资料吗？`)) return;
+  const response = await fetch("/api/files/batch/review", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, status }),
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "批量审核失败。"));
+    return;
+  }
+  const result = await response.json();
+  selectedFileIds.clear();
+  await loadCourseFiles(currentCourseId, currentFilePage);
+  await refreshCourse();
+  // 部分失败必须让人看见是哪几份，不能只报「完成」。
+  window.alert(describeBatchResult("资料", result));
 }
 
 async function editFile(file, courseId) {
@@ -1070,6 +1116,8 @@ function userQuery(page) {
 async function loadUsers(page = 1) {
   if (!userList) return;
   currentUserPage = page;
+  // 勾选只在当前这一页有效：翻页或换筛选条件后清空，避免改到看不见的用户。
+  selectedUserIds.clear();
   showState(userList, "正在加载用户...");
   userPagination.innerHTML = "";
   try {
@@ -1085,13 +1133,73 @@ async function loadUsers(page = 1) {
 function renderUsers(data) {
   const users = data.items || [];
   userList.innerHTML = "";
+  currentUserIds = users.map((item) => item.id);
   if (!users.length) {
     showState(userList, "没有匹配的用户");
     renderPagination(userPagination, null, () => {});
+    syncUserSelection();
     return;
   }
   users.forEach((item) => userList.append(renderUserRow(item)));
   renderPagination(userPagination, data, (page) => loadUsers(page));
+  syncUserSelection();
+}
+
+function syncUserSelection() {
+  const count = selectedUserIds.size;
+  if (userSelectionCount) {
+    userSelectionCount.textContent = count ? `已选 ${count} 个` : "";
+  }
+  [userBatchEnable, userBatchDisable, userBatchRoleApply].forEach((button) => {
+    if (button) button.disabled = count === 0;
+  });
+  if (userBatchRole) userBatchRole.disabled = count === 0;
+  if (userSelectAll) {
+    const onPage = currentUserIds.filter((id) => selectedUserIds.has(id)).length;
+    userSelectAll.checked = currentUserIds.length > 0 && onPage === currentUserIds.length;
+    // 只选了一部分时用「半选」状态，避免看起来像全选或全不选。
+    userSelectAll.indeterminate = onPage > 0 && onPage < currentUserIds.length;
+  }
+}
+
+function setUserBatchMessage(message, isError = false) {
+  if (!userBatchMessage) return;
+  userBatchMessage.textContent = message;
+  userBatchMessage.className = isError ? "form-message error-message" : "form-message";
+}
+
+// 批量操作逐条回报，这里把「哪几条失败、为什么」拼成一句人话。
+function describeBatchResult(noun, result) {
+  if (!result.failed) {
+    return `${noun}批量操作完成：成功 ${result.succeeded} 条。`;
+  }
+  const reasons = (result.items || [])
+    .filter((item) => !item.ok)
+    .map((item) => `#${item.id} ${item.message}`)
+    .join("；");
+  return `${noun}批量操作完成：成功 ${result.succeeded} 条，失败 ${result.failed} 条（${reasons}）`;
+}
+
+async function batchUserAction(action, role = null) {
+  const ids = [...selectedUserIds];
+  if (!ids.length) return;
+  const payload = { ids, action };
+  if (role) payload.role = role;
+  setUserBatchMessage("正在处理...");
+  try {
+    const response = await fetch("/api/users/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(await readError(response, "批量操作失败。"));
+    const result = await response.json();
+    setUserBatchMessage(describeBatchResult("用户", result), result.failed > 0);
+    selectedUserIds.clear();
+    await loadUsers(currentUserPage);
+  } catch (error) {
+    setUserBatchMessage(error.message || "批量操作失败。", true);
+  }
 }
 
 async function loadAudit(page = 1) {
@@ -1263,6 +1371,17 @@ function renderUserRow(item) {
   const row = document.createElement("li");
   row.className = "user-row";
 
+  const select = document.createElement("input");
+  select.type = "checkbox";
+  select.className = "file-select";
+  select.checked = selectedUserIds.has(item.id);
+  select.setAttribute("aria-label", `选择用户 ${item.username}`);
+  select.addEventListener("change", () => {
+    if (select.checked) selectedUserIds.add(item.id);
+    else selectedUserIds.delete(item.id);
+    syncUserSelection();
+  });
+
   const identity = document.createElement("div");
   identity.className = "user-identity";
   const title = document.createElement("h3");
@@ -1316,7 +1435,7 @@ function renderUserRow(item) {
   reset.addEventListener("click", () => resetUserPassword(item));
 
   actions.append(roleSelect, toggle, reset);
-  row.append(identity, actions);
+  row.append(select, identity, actions);
   return row;
 }
 
@@ -1544,6 +1663,38 @@ function initHomePage() {
   courseCreateForm?.addEventListener("submit", createCourse);
   userCreateForm?.addEventListener("submit", createUser);
   userFilterButton?.addEventListener("click", () => loadUsers(1));
+  userSelectAll?.addEventListener("change", () => {
+    // 只作用于当前这一页；跨页的勾选状态保持不变。
+    currentUserIds.forEach((id) => {
+      if (userSelectAll.checked) selectedUserIds.add(id);
+      else selectedUserIds.delete(id);
+    });
+    userList.querySelectorAll(".file-select").forEach((box) => {
+      box.checked = userSelectAll.checked;
+    });
+    syncUserSelection();
+  });
+  userBatchEnable?.addEventListener("click", () => {
+    if (window.confirm(`确定启用选中的 ${selectedUserIds.size} 个用户吗？`)) {
+      batchUserAction("enable");
+    }
+  });
+  userBatchDisable?.addEventListener("click", () => {
+    if (window.confirm(`确定停用选中的 ${selectedUserIds.size} 个用户吗？停用后他们会立即被登出。`)) {
+      batchUserAction("disable");
+    }
+  });
+  userBatchRoleApply?.addEventListener("click", () => {
+    if (!userBatchRole?.value) {
+      setUserBatchMessage("请先选择要批量设置的角色。", true);
+      return;
+    }
+    const label = userBatchRole.options[userBatchRole.selectedIndex].textContent;
+    if (window.confirm(`确定把选中的 ${selectedUserIds.size} 个用户都改成「${label}」吗？`)) {
+      batchUserAction("role", userBatchRole.value);
+    }
+  });
+  userBatchRole?.addEventListener("change", () => setUserBatchMessage(""));
   userFilterRole?.addEventListener("change", () => loadUsers(1));
   userFilterKeyword?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;

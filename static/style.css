@@ -425,6 +425,8 @@ mark { background: #fff3c4; color: inherit; border-radius: 4px; padding: 0 2px; 
 .file-toolbar .muted { font-size: 13.5px; }
 /* 「打包下载整门课」推到最右边，和左边的选中操作分开。 */
 .file-toolbar #archive-all { margin-left: auto; }
+/* 用户批量工具条同理：把「应用角色」推到最右边，和左边的开关操作分开。 */
+.file-toolbar #user-batch-role-apply { margin-left: auto; }
 .file-select { accent-color: var(--accent); flex: 0 0 auto; height: 17px; margin: 0 -8px 0 0; width: 17px; }
 
 .status-badge { border-radius: 999px; display: inline-block; font-size: 12px; font-weight: 700; line-height: 1.4; padding: 3px 10px; white-space: nowrap; }

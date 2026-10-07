@@ -7,9 +7,12 @@ from app.api.auth import public_user, require_roles
 from app.auth import hash_password
 from app.db import get_db, record_audit
 from app.schemas import (
+    BatchItemResult,
+    BatchResult,
     PasswordReset,
     User,
     UserAdmin,
+    UserBatchUpdate,
     UserCreate,
     UserPage,
     UserUpdate,
@@ -145,22 +148,18 @@ def create_user(
     return public_user(row)
 
 
-@router.patch(
-    "/api/users/{user_id}",
-    include_in_schema=False,
-)
-@router.patch(
-    "/接口/用户/{user_id}",
-    response_model=UserAdmin,
-    summary="修改用户角色或启用状态",
-    operation_id="修改用户角色或启用状态",
-)
-def update_user(
+def apply_user_update(
     user_id: int,
     update: UserUpdate,
-    user: sqlite3.Row = Depends(require_roles("admin")),
-    db: sqlite3.Connection = Depends(get_db),
+    actor: sqlite3.Row,
+    db: sqlite3.Connection,
 ) -> UserAdmin:
+    """单条用户更新的全部逻辑：校验、落库、审计。
+
+    抽出来是为了让批量接口复用同一套规则——批量操作绝不能绕过「不能停用自己」
+    「必须保留至少一个启用的管理员」这些约束。
+    """
+
     row = fetch_user(user_id, db)
     if row is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -170,7 +169,7 @@ def update_user(
     new_role: str = update.role if update.role is not None else old_role
     new_active = update.is_active if update.is_active is not None else was_active
 
-    if user_id == user["id"]:
+    if user_id == actor["id"]:
         if new_role != old_role:
             raise HTTPException(status_code=409, detail="不能修改自己的角色")
         if not new_active:
@@ -196,7 +195,7 @@ def update_user(
         changes.append("状态 启用 → 停用" if not new_active else "状态 停用 → 启用")
     record_audit(
         db,
-        user["id"],
+        actor["id"],
         "update",
         "user",
         user_id,
@@ -208,6 +207,67 @@ def update_user(
     db.commit()
     updated = fetch_user(user_id, db)
     return user_admin_response(updated)
+
+
+@router.patch(
+    "/api/users/{user_id}",
+    include_in_schema=False,
+)
+@router.patch(
+    "/接口/用户/{user_id}",
+    response_model=UserAdmin,
+    summary="修改用户角色或启用状态",
+    operation_id="修改用户角色或启用状态",
+)
+def update_user(
+    user_id: int,
+    update: UserUpdate,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> UserAdmin:
+    return apply_user_update(user_id, update, user, db)
+
+
+BATCH_USER_ACTIONS = {
+    "enable": UserUpdate(is_active=True),
+    "disable": UserUpdate(is_active=False),
+}
+
+
+@router.post(
+    "/api/users/batch",
+    include_in_schema=False,
+)
+@router.post(
+    "/接口/用户/批量修改",
+    response_model=BatchResult,
+    summary="批量启用、停用或改角色",
+    operation_id="批量修改用户",
+)
+def batch_update_users(
+    payload: UserBatchUpdate,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> BatchResult:
+    if payload.action == "role":
+        update = UserUpdate(role=payload.role)
+    else:
+        update = BATCH_USER_ACTIONS[payload.action]
+
+    results: list[BatchItemResult] = []
+    # dict.fromkeys 去重同时保持传入顺序，避免同一个编号被处理两遍。
+    for user_id in dict.fromkeys(payload.ids):
+        try:
+            apply_user_update(user_id, update, user, db)
+        except HTTPException as error:
+            # 逐条独立成败：一条不合法不该把整批都回滚掉。
+            db.rollback()
+            results.append(
+                BatchItemResult(id=user_id, ok=False, message=str(error.detail))
+            )
+        else:
+            results.append(BatchItemResult(id=user_id, ok=True, message="已更新"))
+    return BatchResult.from_items(results)
 
 
 @router.post(

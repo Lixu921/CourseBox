@@ -34,7 +34,16 @@ from app.db import (
     restore_staged_files,
     stage_stored_files,
 )
-from app.schemas import CourseQuota, FilePage, FileReview, FileUpdate, TrashFilePage
+from app.schemas import (
+    BatchItemResult,
+    BatchResult,
+    CourseQuota,
+    FileBatchReview,
+    FilePage,
+    FileReview,
+    FileUpdate,
+    TrashFilePage,
+)
 
 router = APIRouter(tags=["资料"])
 logger = logging.getLogger("coursebox")
@@ -937,6 +946,44 @@ def search_files(
     )
 
 
+REVIEW_LABELS = {"approved": "已通过", "rejected": "已拒绝"}
+
+
+def apply_file_review(
+    file_id: int,
+    status_value: str,
+    actor: sqlite3.Row,
+    db: sqlite3.Connection,
+) -> dict:
+    """单份资料的审核逻辑。批量接口复用它，保证审计与校验完全一致。"""
+
+    cursor = db.execute(
+        "UPDATE files SET status = ? WHERE id = ? AND deleted_at IS NULL",
+        (status_value, file_id),
+    )
+    if cursor.rowcount == 0:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="资料不存在")
+    record_audit(
+        db,
+        actor["id"],
+        status_value,
+        "file",
+        file_id,
+        f"资料审核结果：{status_value}",
+    )
+    db.commit()
+    row = db.execute(
+        """
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status, uploaded_by
+        FROM files WHERE id = ?
+        """,
+        (file_id,),
+    ).fetchone()
+    return file_response(row)
+
+
 @router.patch(
     "/api/files/{file_id}/review",
     include_in_schema=False,
@@ -953,31 +1000,45 @@ def review_file(
     user: sqlite3.Row = Depends(require_roles("admin")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    cursor = db.execute(
-        "UPDATE files SET status = ? WHERE id = ? AND deleted_at IS NULL",
-        (review.status, file_id),
-    )
-    if cursor.rowcount == 0:
-        db.rollback()
-        raise HTTPException(status_code=404, detail="资料不存在")
-    record_audit(
-        db,
-        user["id"],
-        review.status,
-        "file",
-        file_id,
-        f"资料审核结果：{review.status}",
-    )
-    db.commit()
-    row = db.execute(
-        """
-        SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
-        FROM files WHERE id = ?
-        """,
-        (file_id,),
-    ).fetchone()
-    return file_response(row)
+    return apply_file_review(file_id, review.status, user, db)
+
+
+@router.post(
+    "/api/files/batch/review",
+    include_in_schema=False,
+)
+# 批量审核故意用 POST：路由按注册顺序匹配，写成 PATCH 的话
+# /接口/资料/批量审核 会先被 PATCH /接口/资料/{资料编号} 吃掉，
+# 「批量审核」当编号解析失败就变成 422。这个前缀下没有别的 POST，用 POST 不会撞。
+@router.post(
+    "/接口/资料/批量审核",
+    response_model=BatchResult,
+    summary="批量通过或拒绝资料",
+    operation_id="批量审核资料",
+)
+def batch_review_files(
+    payload: FileBatchReview,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> BatchResult:
+    results: list[BatchItemResult] = []
+    # dict.fromkeys 去重同时保持传入顺序，避免同一个编号被审两遍。
+    for file_id in dict.fromkeys(payload.ids):
+        try:
+            apply_file_review(file_id, payload.status, user, db)
+        except HTTPException as error:
+            # 逐条独立成败：某一份不存在或已被删除，不影响其余几份。
+            db.rollback()
+            results.append(
+                BatchItemResult(id=file_id, ok=False, message=str(error.detail))
+            )
+        else:
+            results.append(
+                BatchItemResult(
+                    id=file_id, ok=True, message=REVIEW_LABELS[payload.status]
+                )
+            )
+    return BatchResult.from_items(results)
 
 
 trash_router = APIRouter(tags=["回收站"])

@@ -140,6 +140,53 @@ class FileReview(BaseModel):
     status: Literal["approved", "rejected"]
 
 
+# 批量操作一次最多处理这么多条：既够管理员一次勾一页，又不会让单个请求
+# 拿着几百条编号把连接占太久。
+BATCH_MAX_ITEMS = 200
+
+
+class BatchItemResult(BaseModel):
+    id: int
+    ok: bool
+    message: str = ""
+
+
+class BatchResult(BaseModel):
+    """批量操作结果：逐条回报，部分失败时能看出是哪些失败了。"""
+
+    succeeded: int
+    failed: int
+    items: list[BatchItemResult]
+
+    @classmethod
+    def from_items(cls, items: list[BatchItemResult]) -> "BatchResult":
+        succeeded = sum(1 for item in items if item.ok)
+        return cls(
+            succeeded=succeeded,
+            failed=len(items) - succeeded,
+            items=items,
+        )
+
+
+class BatchIds(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=BATCH_MAX_ITEMS)
+
+
+class UserBatchUpdate(BatchIds):
+    action: Literal["enable", "disable", "role"]
+    role: Literal["admin", "uploader", "viewer"] | None = None
+
+    @model_validator(mode="after")
+    def role_required_for_role_action(self) -> "UserBatchUpdate":
+        if self.action == "role" and self.role is None:
+            raise ValueError("批量修改角色时必须指定目标角色")
+        return self
+
+
+class FileBatchReview(BatchIds):
+    status: Literal["approved", "rejected"]
+
+
 class Course(BaseModel):
     id: int
     name: str
