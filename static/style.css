@@ -143,8 +143,6 @@ h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; font-weight: 700; }
   transition: box-shadow .2s, border-color .2s;
 }
 .search-bar:focus-within { border-color: var(--accent-light); box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow-md); }
-/* 课程列表上方的搜索框：不需要首页搜索栏那么大的留白。 */
-.course-search-bar { margin-bottom: 24px; max-width: 560px; }
 .search-bar input {
   min-width: 0;
   flex: 1;
@@ -209,6 +207,50 @@ mark { background: #fff3c4; color: inherit; border-radius: 4px; padding: 0 2px; 
 .section-heading { align-items: baseline; display: flex; gap: 12px; margin-bottom: 20px; }
 .muted { color: var(--muted); font-size: 14px; }
 .course-grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+/* 合并搜索后，结果区要同时装「课程」「资料」两组，所以外层是普通块级容器，
+   卡片网格退到里面一层。 */
+.results { display: block; }
+.result-group-heading {
+  align-items: center;
+  color: var(--accent-dark);
+  display: flex;
+  font-size: 15px;
+  font-weight: 700;
+  gap: 10px;
+  margin: 22px 0 12px;
+}
+.results > .result-group-heading:first-child { margin-top: 0; }
+.result-group-heading::after {
+  background: var(--line);
+  content: "";
+  flex: 1;
+  height: 1px;
+}
+.results .search-result-card + .search-result-card { margin-top: 14px; }
+
+/* 错误页：接口继续回 JSON，浏览器直接访问时给一张看得懂的中文页面。 */
+.error-page {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  margin: 40px auto;
+  max-width: 520px;
+  padding: 40px 32px;
+  text-align: center;
+}
+.error-status {
+  color: var(--accent);
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  margin: 0 0 12px;
+}
+.error-page h1 { font-size: 22px; line-height: 1.5; margin: 0 0 12px; }
+.error-page .intro-copy { margin: 0 0 22px; }
+.error-actions { margin: 0; }
+.error-actions a { display: inline-block; text-decoration: none; }
 .course-card {
   --card-accent: linear-gradient(135deg, #2ec9a8, #14a08d);
   position: relative;

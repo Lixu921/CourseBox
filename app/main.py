@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
+from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, Request, status
@@ -293,6 +294,9 @@ def request_error_response(
 # 只注册 FastAPI 的子类会让这些响应退回默认形状。
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # 浏览器直接访问地址栏时给一张中文页面；接口调用方继续拿 JSON。
+    if wants_html_error(request):
+        return render_error_page(exc.status_code, error_page_message(exc))
     return request_error_response(
         request,
         exc.status_code,
@@ -364,6 +368,53 @@ def render_page(filename: str) -> HTMLResponse:
         _page_cache.clear()
         _page_cache[cache_key] = body
     return HTMLResponse(body, headers={"Cache-Control": PAGE_CACHE_CONTROL})
+
+
+# 浏览器直接访问时的中文提示。接口调用方拿到的仍然是 JSON 错误结构。
+ERROR_PAGE_MESSAGES = {
+    400: "请求有误，请检查后重试。",
+    401: "请先登录后再访问这个页面。",
+    403: "你没有访问这个页面的权限。",
+    404: "没有找到这个页面。",
+    405: "这个地址不支持当前的访问方式。",
+    409: "当前状态下无法完成这个操作。",
+    413: "上传的内容太大了。",
+    415: "不支持这种文件类型。",
+    429: "请求太频繁了，请稍后再试。",
+    500: "服务器开小差了，请稍后再试。",
+    503: "服务暂时不可用，请稍后再试。",
+}
+# 这些前缀下的请求一律按接口对待，永远回 JSON，不回 HTML。
+JSON_PATH_PREFIXES = ("/接口", "/api")
+
+
+def wants_html_error(request: Request) -> bool:
+    """这个请求是「浏览器直接打开地址」，还是接口调用？"""
+
+    if request.url.path.startswith(JSON_PATH_PREFIXES):
+        return False
+    return "text/html" in request.headers.get("accept", "")
+
+
+def error_page_message(exc: StarletteHTTPException) -> str:
+    known = ERROR_PAGE_MESSAGES.get(exc.status_code)
+    if known:
+        return known
+    # 没收录的状态码就用原始 detail，总比显示「未知错误」有用。
+    if isinstance(exc.detail, str) and exc.detail:
+        return exc.detail
+    return "请求处理失败。"
+
+
+def render_error_page(status_code: int, message: str) -> HTMLResponse:
+    body = (STATIC_PATH / "error.html").read_text(encoding="utf-8")
+    body = body.replace(ASSET_VERSION_PLACEHOLDER, asset_version())
+    body = body.replace("{{status}}", str(status_code))
+    # 错误信息可能来自 detail，必须转义后再拼进 HTML。
+    body = body.replace("{{message}}", escape(message))
+    return HTMLResponse(
+        body, status_code=status_code, headers={"Cache-Control": PAGE_CACHE_CONTROL}
+    )
 
 
 @app.get("/资源/样式.css", include_in_schema=False)

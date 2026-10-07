@@ -106,8 +106,11 @@ def test_pages_are_available():
     assert 'id="trash-panel"' in homepage.text
     assert 'id="trash-list"' in homepage.text
     assert 'id="trash-filter-keyword"' in homepage.text
-    assert 'id="course-search-form"' in homepage.text
-    assert 'id="course-search-input"' in homepage.text
+    # 首页只留一个搜索框：同时搜课程和资料，结果分两组展示。
+    assert 'id="course-search-form"' not in homepage.text
+    assert 'id="course-list"' in homepage.text
+    assert 'class="results"' in homepage.text
+    assert homepage.text.count("<form id=\"search-form\"") == 1
     assert 'id="auth-hint"' in homepage.text
     assert 'id="auth-hint-login"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
@@ -2994,5 +2997,42 @@ def test_batch_endpoints_require_admin(tmp_path, monkeypatch):
     assert viewer.post(
         "/接口/资料/批量审核", json={"ids": [1], "status": "approved"}
     ).status_code == 403
+
+
+def test_error_pages_are_html_for_browsers_and_json_for_api():
+    client = create_client()
+    browser_headers = {"Accept": "text/html,application/xhtml+xml"}
+
+    # 浏览器直接访问不存在的地址：拿到一张看得懂的中文页面。
+    page = client.get("/不存在的路径", headers=browser_headers)
+    assert page.status_code == 404
+    assert page.headers["content-type"].startswith("text/html")
+    assert "没有找到这个页面" in page.text
+    assert page.headers["Cache-Control"] == "no-cache"
+    # 页面里引用的静态资源地址同样带版本号。
+    assert 'href="/资源/样式.css?v=' in page.text
+    assert "{{asset_version}}" not in page.text
+
+    # 同一个地址，接口调用方（不接受 HTML）仍然拿 JSON。
+    api = client.get("/不存在的路径", headers={"Accept": "application/json"})
+    assert api.status_code == 404
+    assert api.headers["content-type"].startswith("application/json")
+    assert api.json()["error"]["code"] == "not_found"
+
+    # /接口 前缀下的 404 一律回 JSON，哪怕请求头明确要 HTML。
+    interface = client.get("/接口/课程/999999", headers=browser_headers)
+    assert interface.status_code == 404
+    assert interface.headers["content-type"].startswith("application/json")
+    assert interface.json()["error"]["code"] == "not_found"
+
+
+def test_error_page_escapes_detail():
+    from app.main import render_error_page
+
+    page = render_error_page(418, "<script>alert(1)</script>")
+    body = page.body.decode("utf-8")
+    # detail 可能来自用户可控的内容，拼进 HTML 前必须转义。
+    assert "<script>" not in body
+    assert "&lt;script&gt;" in body
 
 

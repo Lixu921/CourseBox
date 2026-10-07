@@ -2,9 +2,6 @@ const courseList = document.querySelector("#course-list");
 const courseCount = document.querySelector("#course-count");
 const coursePagination = document.querySelector("#course-pagination");
 const courseHeading = document.querySelector("#course-heading");
-const courseSearchForm = document.querySelector("#course-search-form");
-const courseSearchInput = document.querySelector("#course-search-input");
-const courseSearchReset = document.querySelector("#course-search-reset");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
 const searchButton = searchForm?.querySelector("button");
@@ -119,7 +116,6 @@ let currentUserPage = 1;
 let currentAuditPage = 1;
 let currentTrashPage = 1;
 let currentMyUploadPage = 1;
-let currentCourseKeyword = "";
 let currentSearchQuery = "";
 // 课程页里被勾选、准备打包下载的资料编号，以及当前这一页的资料编号。
 const selectedFileIds = new Set();
@@ -329,85 +325,129 @@ async function logout() {
   }
 }
 
+function courseCard(course) {
+  const card = document.createElement("a");
+  card.className = "course-card";
+  card.href = courseUrl(course);
+  const title = document.createElement("h3");
+  title.textContent = course.name;
+  card.append(title);
+  if (course.college) {
+    const college = document.createElement("p");
+    college.className = "course-meta";
+    college.textContent = course.college;
+    card.append(college);
+  }
+  if (course.semester) {
+    const semester = document.createElement("p");
+    semester.className = "course-meta";
+    semester.textContent = course.semester;
+    card.append(semester);
+  }
+  return card;
+}
+
+function courseGrid(courses) {
+  const grid = document.createElement("div");
+  grid.className = "course-grid";
+  courses.forEach((course) => grid.append(courseCard(course)));
+  return grid;
+}
+
+function groupHeading(text) {
+  const heading = document.createElement("h3");
+  heading.className = "result-group-heading";
+  heading.textContent = text;
+  return heading;
+}
+
 function renderCourses(data) {
   const courses = data.items || [];
   courseList.innerHTML = "";
-  courseHeading.textContent = currentCourseKeyword ? "课程搜索结果" : "全部课程";
+  courseHeading.textContent = "全部课程";
   courseCount.textContent = `${data.total} 门`;
-  if (courseSearchReset) courseSearchReset.hidden = !currentCourseKeyword;
   if (!courses.length) {
-    showState(
-      courseList,
-      currentCourseKeyword ? "没有匹配的课程" : "还没有课程资料"
-    );
+    showState(courseList, "还没有课程资料");
     renderPagination(coursePagination, null, () => {});
     return;
   }
-  courses.forEach((course) => {
-    const card = document.createElement("a");
-    card.className = "course-card";
-    card.href = courseUrl(course);
-    const title = document.createElement("h3");
-    title.textContent = course.name;
-    card.append(title);
-    if (course.college) {
-      const college = document.createElement("p");
-      college.className = "course-meta";
-      college.textContent = course.college;
-      card.append(college);
-    }
-    if (course.semester) {
-      const semester = document.createElement("p");
-      semester.className = "course-meta";
-      semester.textContent = course.semester;
-      card.append(semester);
-    }
-    courseList.append(card);
-  });
+  courseList.append(courseGrid(courses));
   renderPagination(coursePagination, data, (page) => loadCourses(page));
 }
 
-function renderSearchResults(data) {
-  const results = data.items || [];
+function searchResultCard(file, query) {
+  const card = document.createElement("article");
+  card.className = "search-result-card";
+  const title = document.createElement("h3");
+  title.append(highlight(file.title, query));
+  const metadata = document.createElement("p");
+  metadata.className = "course-meta";
+  metadata.append(highlight(file.original_name, query));
+  metadata.append(` · ${formatFileSize(file.size)}`);
+  const course = document.createElement("p");
+  course.className = "result-course";
+  course.append("所属课程：");
+  course.append(highlight(file.course.name, query));
+  const actions = document.createElement("div");
+  actions.className = "result-actions";
+  const courseLink = document.createElement("a");
+  courseLink.className = "course-link";
+  courseLink.href = courseUrl(file.course);
+  courseLink.textContent = "查看课程";
+  const preview = previewButton(file);
+  if (preview) actions.append(preview);
+  const download = document.createElement("a");
+  download.className = "download-link";
+  download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+  download.textContent = "下载";
+  download.setAttribute("download", "");
+  actions.append(courseLink, download);
+  card.append(title, metadata, course, actions);
+  return card;
+}
+
+// 合并搜索：同一个关键词同时找课程和资料，分两组展示。
+// 只勾了筛选条件（没有关键词）时退化成「筛选资料」。
+function renderCombinedSearch(coursesData, filesData, page) {
+  const courses = coursesData?.items || [];
+  const files = filesData.items || [];
+  const query = currentSearchQuery;
   courseList.innerHTML = "";
-  courseHeading.textContent = "搜索结果";
-  courseCount.textContent = `${data.total} 份`;
-  if (!results.length) {
-    showState(courseList, "没有找到相关资料");
+  courseHeading.textContent = query ? "搜索结果" : "筛选结果";
+
+  const parts = [];
+  if (coursesData) parts.push(`课程 ${coursesData.total} 门`);
+  parts.push(`资料 ${filesData.total} 份`);
+  courseCount.textContent = parts.join(" · ");
+
+  if (!courses.length && !files.length) {
+    showState(courseList, query ? "没有找到匹配的课程或资料" : "没有找到匹配的资料");
     renderPagination(coursePagination, null, () => {});
     return;
   }
-  results.forEach((file) => {
-    const card = document.createElement("article");
-    card.className = "search-result-card";
-    const title = document.createElement("h3");
-    title.append(highlight(file.title, currentSearchQuery));
-    const metadata = document.createElement("p");
-    metadata.className = "course-meta";
-    metadata.append(highlight(file.original_name, currentSearchQuery));
-    metadata.append(` · ${formatFileSize(file.size)}`);
-    const course = document.createElement("p");
-    course.className = "result-course";
-    course.append("所属课程：");
-    course.append(highlight(file.course.name, currentSearchQuery));
-    const actions = document.createElement("div");
-    actions.className = "result-actions";
-    const courseLink = document.createElement("a");
-    courseLink.className = "course-link";
-    courseLink.href = courseUrl(file.course);
-    courseLink.textContent = "查看课程";
-    const preview = previewButton(file);
-    if (preview) actions.append(preview);
-    const download = document.createElement("a");
-    download.className = "download-link";
-    download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
-    download.textContent = "下载";
-    download.setAttribute("download", "");
-    actions.append(courseLink, download);
-    card.append(title, metadata, course, actions);
-    courseList.append(card);
-  });
-  renderPagination(coursePagination, data, (page) => searchFiles(searchInput.value.trim(), page));
+
+  if (coursesData) {
+    courseList.append(groupHeading(`课程（${coursesData.total} 门）`));
+    if (courses.length) courseList.append(courseGrid(courses));
+    else courseList.append(stateLine("没有匹配的课程"));
+  }
+
+  courseList.append(groupHeading(`资料（${filesData.total} 份）`));
+  if (files.length) {
+    files.forEach((file) => courseList.append(searchResultCard(file, query)));
+    // 分页跟着「资料」这组走：课程一组是一次性展示的前 12 门。
+    renderPagination(coursePagination, filesData, (next) => runCombinedSearch(next));
+  } else {
+    courseList.append(stateLine("没有匹配的资料"));
+    renderPagination(coursePagination, null, () => {});
+  }
+}
+
+function stateLine(message) {
+  const element = document.createElement("p");
+  element.className = "state-message";
+  element.textContent = message;
+  return element;
 }
 
 function setSearchLoading(isLoading) {
@@ -420,7 +460,6 @@ async function loadCourses(page = 1) {
   courseCount.textContent = "";
   coursePagination.innerHTML = "";
   const params = new URLSearchParams({ page: String(page), page_size: "12" });
-  if (currentCourseKeyword) params.set("关键词", currentCourseKeyword);
   try {
     const response = await fetch(`/api/courses?${params}`);
     if (!response.ok) throw new Error("课程加载失败");
@@ -447,9 +486,10 @@ function searchFilterParams() {
   return params;
 }
 
-async function searchFiles(query, page = 1) {
+async function runCombinedSearch(page = 1) {
+  const query = searchInput.value.trim();
   currentSearchQuery = query;
-  showState(courseList, "正在搜索资料...");
+  showState(courseList, "正在搜索...");
   courseHeading.textContent = query ? "搜索结果" : "筛选结果";
   courseCount.textContent = "";
   coursePagination.innerHTML = "";
@@ -459,9 +499,21 @@ async function searchFiles(query, page = 1) {
     params.set("q", query);
     params.set("page", String(page));
     params.set("page_size", "12");
-    const response = await fetch(`/api/search?${params}`);
-    if (!response.ok) throw new Error(await readError(response, "搜索失败"));
-    renderSearchResults(await response.json());
+    const requests = [fetch(`/api/search?${params}`)];
+    // 没有关键词时只筛资料：拿课程去匹配空关键词没有意义。
+    if (query) {
+      const courseParams = new URLSearchParams({
+        page: "1",
+        page_size: "12",
+        关键词: query,
+      });
+      requests.push(fetch(`/api/courses?${courseParams}`));
+    }
+    const [filesResponse, coursesResponse] = await Promise.all(requests);
+    if (!filesResponse.ok) throw new Error(await readError(filesResponse, "搜索失败"));
+    const filesData = await filesResponse.json();
+    const coursesData = coursesResponse?.ok ? await coursesResponse.json() : null;
+    renderCombinedSearch(coursesData, filesData, page);
   } catch (error) {
     showState(courseList, `${error.message || "搜索失败"}，请检查筛选条件后重试。`, true);
     courseCount.textContent = "";
@@ -478,7 +530,7 @@ function runSearch() {
   ["课程编号", "类型", "起始时间", "结束时间", "排序"].forEach((key) => url.searchParams.delete(key));
   searchFilterParams().forEach((value, key) => url.searchParams.set(key, value));
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
-  if (query || activeFilterCount()) searchFiles(query, 1);
+  if (query || activeFilterCount()) runCombinedSearch(1);
   else loadCourses();
 }
 
@@ -1650,16 +1702,6 @@ function initHomePage() {
     control?.addEventListener("change", () => runSearch());
   });
   searchResetButton?.addEventListener("click", resetSearchFilters);
-  courseSearchForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    currentCourseKeyword = courseSearchInput.value.trim();
-    loadCourses(1);
-  });
-  courseSearchReset?.addEventListener("click", () => {
-    courseSearchInput.value = "";
-    currentCourseKeyword = "";
-    loadCourses(1);
-  });
   courseCreateForm?.addEventListener("submit", createCourse);
   userCreateForm?.addEventListener("submit", createUser);
   userFilterButton?.addEventListener("click", () => loadUsers(1));
@@ -1727,7 +1769,7 @@ function initHomePage() {
   if (searchSort) searchSort.value = params.get("排序") || "newest";
   populateCourseFilter();
   if (query) searchInput.value = query;
-  if (query || activeFilterCount()) searchFiles(query, 1);
+  if (query || activeFilterCount()) runCombinedSearch(1);
   else loadCourses();
 }
 

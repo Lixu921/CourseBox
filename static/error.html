@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{status}} · 课盒子</title>
+  <link rel="icon" href="/资源/图标.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/资源/样式.css?v={{asset_version}}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/">课盒子</a>
+      <span class="header-note">课程资料共享</span>
+    </div>
+  </header>
+  <main class="shell page-content">
+    <section class="error-page">
+      <p class="error-status">{{status}}</p>
+      <h1>{{message}}</h1>
+      <p class="intro-copy">如果是链接过期或地址写错了，可以从首页重新找这门课。</p>
+      <p class="error-actions">
+        <a class="primary-button compact-button" href="/">返回首页</a>
+      </p>
+    </section>
+  </main>
+</body>
+</html>
