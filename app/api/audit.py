@@ -26,6 +26,12 @@ AuditAction = Literal[
     "login",
     "logout",
     "reset_password",
+    # 回收站相关动作。
+    "restore",
+    "purge",
+    # 资料审核写入的动作就是审核结果本身，之前没列进来，导致按动作筛不到审核记录。
+    "approved",
+    "rejected",
 ]
 AuditEntity = Literal["course", "file", "user"]
 

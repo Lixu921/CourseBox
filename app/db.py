@@ -104,10 +104,9 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_files_course_id ON files(course_id);
             CREATE INDEX IF NOT EXISTS idx_files_title ON files(title);
             CREATE INDEX IF NOT EXISTS idx_files_original_name ON files(original_name);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_files_course_sha256
-                ON files(course_id, sha256) WHERE sha256 IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
             CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON files(uploaded_by);
+            CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
@@ -115,6 +114,9 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 ON login_attempts(locked_until);
             """
         )
+        # sha256 唯一索引由这个函数负责建：它的 WHERE 条件含 deleted_at，
+        # 老库里的旧索引需要重建，不能交给上面的 IF NOT EXISTS 一句话带过。
+        ensure_files_sha256_index(connection)
         ensure_fts(connection)
         ensure_bootstrap_admin(connection)
         connection.commit()
@@ -184,6 +186,9 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
         "sha256": "ALTER TABLE files ADD COLUMN sha256 TEXT",
         "status": "ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'",
         "uploaded_by": "ALTER TABLE files ADD COLUMN uploaded_by INTEGER",
+        # 回收站：删除资料只打标记，磁盘文件先留着，超期才真正清理。
+        "deleted_at": "ALTER TABLE files ADD COLUMN deleted_at TEXT",
+        "deleted_by": "ALTER TABLE files ADD COLUMN deleted_by INTEGER",
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -198,6 +203,32 @@ def migrate_users_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
         )
+
+
+SHA256_INDEX_NAME = "idx_files_course_sha256"
+# 同一课程内按内容哈希去重。必须排除已软删除的行，否则一份资料被删进回收站后，
+# 它仍然占着唯一约束，同一份文件就再也传不进这门课了。
+SHA256_INDEX_SQL = (
+    f"CREATE UNIQUE INDEX IF NOT EXISTS {SHA256_INDEX_NAME} "
+    "ON files(course_id, sha256) WHERE sha256 IS NOT NULL AND deleted_at IS NULL"
+)
+
+
+def ensure_files_sha256_index(connection: sqlite3.Connection) -> None:
+    """建立（或把老库里的旧版）内容去重唯一索引升级成排除已删除行的版本。"""
+
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (SHA256_INDEX_NAME,),
+    ).fetchone()
+    existing = row["sql"] if row is not None else None
+    if existing is not None:
+        if "deleted_at" in existing.lower():
+            return
+        # 老索引没有 deleted_at 条件。它此前一直生效，所以未删除行之间不可能有重复，
+        # 重建不会因为数据冲突而失败。
+        connection.execute(f"DROP INDEX {SHA256_INDEX_NAME}")
+    connection.execute(SHA256_INDEX_SQL)
 
 
 def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:
@@ -321,6 +352,42 @@ def purge_audit_logs(connection: sqlite3.Connection, retention_days: int) -> int
     )
     connection.commit()
     return cursor.rowcount or 0
+
+
+def purge_deleted_files(connection: sqlite3.Connection, retention_days: int) -> int:
+    """把回收站里超过保留期的资料真正删掉（含磁盘文件），返回清理条数。
+
+    复用删除流程里的暂存机制：先把磁盘文件改名移开、写日志，数据库删除提交成功
+    后才真正 unlink；中途失败会回滚并把文件改回来，不会出现「记录没了文件还在」
+    或「文件没了记录还在」。
+    """
+
+    if retention_days <= 0:
+        return 0
+    rows = connection.execute(
+        """
+        SELECT id, filename FROM files
+        WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ?)
+        """,
+        (f"-{retention_days} days",),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    staged = stage_stored_files(rows, connection)
+    placeholders = ", ".join("?" for _ in rows)
+    try:
+        connection.execute(
+            f"DELETE FROM files WHERE id IN ({placeholders})",  # noqa: S608 - 占位符数量由内部查询结果决定
+            [row["id"] for row in rows],
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        restore_staged_files(staged, connection)
+        raise
+    discard_staged_files(staged, connection)
+    return len(rows)
 
 
 def stored_file_path(filename: str) -> Path | None:

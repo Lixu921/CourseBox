@@ -30,7 +30,7 @@ from app.db import (
     restore_staged_files,
     stage_stored_files,
 )
-from app.schemas import CourseQuota, FilePage, FileReview, FileUpdate
+from app.schemas import CourseQuota, FilePage, FileReview, FileUpdate, TrashFilePage
 
 router = APIRouter(tags=["资料"])
 logger = logging.getLogger("coursebox")
@@ -100,9 +100,16 @@ def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
     """
 
     settings = get_settings()
-    used_total = db.execute("SELECT COALESCE(SUM(size), 0) FROM files").fetchone()[0]
+    # 只统计未删除的资料。回收站里的资料虽然还占着磁盘，但用户已经把它当成删掉了，
+    # 若继续算进配额，就会出现「删了文件却还是传不上新的」这种反直觉结果；
+    # 真正的物理兜底是下面那条磁盘剩余空间检查。
+    used_total = db.execute(
+        "SELECT COALESCE(SUM(size), 0) FROM files WHERE deleted_at IS NULL"
+    ).fetchone()[0]
     used_course = db.execute(
-        "SELECT COALESCE(SUM(size), 0) FROM files WHERE course_id = ?", (course_id,)
+        "SELECT COALESCE(SUM(size), 0) FROM files "
+        "WHERE course_id = ? AND deleted_at IS NULL",
+        (course_id,),
     ).fetchone()[0]
     candidates = [
         (
@@ -322,6 +329,8 @@ def list_course_files(
     elif user is not None and user["role"] == "uploader":
         visibility = "(f.status = 'approved' OR f.uploaded_by = ?)"
         params.append(user["id"])
+    # 回收站里的资料对所有人都不再可见（包括管理员），要看去回收站面板。
+    visibility = f"({visibility}) AND f.deleted_at IS NULL"
     total = db.execute(
         f"SELECT COUNT(*) FROM files AS f WHERE f.course_id = ? AND {visibility}",  # noqa: S608 - 可见性片段来自内部常量
         params,
@@ -498,14 +507,15 @@ def update_file(
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     existing = db.execute(
-        "SELECT uploaded_by FROM files WHERE id = ?", (file_id,)
+        "SELECT uploaded_by FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,)
     ).fetchone()
     if existing is None:
         raise HTTPException(status_code=404, detail="资料不存在")
     if user["role"] != "admin" and existing["uploaded_by"] != user["id"]:
         raise HTTPException(status_code=403, detail="没有编辑此资料的权限")
     cursor = db.execute(
-        "UPDATE files SET title = ? WHERE id = ?", (update.title, file_id)
+        "UPDATE files SET title = ? WHERE id = ? AND deleted_at IS NULL",
+        (update.title, file_id),
     )
     if cursor.rowcount == 0:
         db.rollback()
@@ -539,23 +549,41 @@ def delete_file(
     user: sqlite3.Row = Depends(require_roles("admin", "uploader")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> None:
+    """删除资料 —— 只移入回收站（软删除），磁盘文件先保留。
+
+    误删是真实会发生的操作，而以前这里是直接物理删除、删了就找不回来。现在改为
+    打标记，回收站保留一段时间（默认 30 天，见 trash_retention_days），期间可以
+    恢复，超期由维护任务真正清理。
+    """
+
     row = db.execute(
-        "SELECT filename, uploaded_by FROM files WHERE id = ?", (file_id,)
+        "SELECT original_name, uploaded_by FROM files "
+        "WHERE id = ? AND deleted_at IS NULL",
+        (file_id,),
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="资料不存在")
     if user["role"] != "admin" and row["uploaded_by"] != user["id"]:
         raise HTTPException(status_code=403, detail="没有删除此资料的权限")
-    staged = stage_stored_files([row], db)
-    try:
-        db.execute("DELETE FROM files WHERE id = ?", (file_id,))
-        record_audit(db, user["id"], "delete", "file", file_id)
-        db.commit()
-    except Exception:
+    cursor = db.execute(
+        """
+        UPDATE files SET deleted_at = CURRENT_TIMESTAMP, deleted_by = ?
+        WHERE id = ? AND deleted_at IS NULL
+        """,
+        (user["id"], file_id),
+    )
+    if cursor.rowcount == 0:
         db.rollback()
-        restore_staged_files(staged, db)
-        raise
-    discard_staged_files(staged, db)
+        raise HTTPException(status_code=404, detail="资料不存在")
+    record_audit(
+        db,
+        user["id"],
+        "delete",
+        "file",
+        file_id,
+        f"移入回收站：{row['original_name']}",
+    )
+    db.commit()
 
 
 download_router = APIRouter(tags=["资料"])
@@ -575,7 +603,7 @@ def download_file(
     row = db.execute(
         """
         SELECT filename, original_name, mime_type, status, uploaded_by
-        FROM files WHERE id = ?
+        FROM files WHERE id = ? AND deleted_at IS NULL
         """,
         (file_id,),
     ).fetchone()
@@ -624,7 +652,8 @@ def preview_file(
     db: sqlite3.Connection = Depends(get_db),
 ):
     row = db.execute(
-        "SELECT filename, original_name, status, uploaded_by FROM files WHERE id = ?",
+        "SELECT filename, original_name, status, uploaded_by FROM files "
+        "WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     ).fetchone()
     if row is None:
@@ -675,7 +704,7 @@ def list_my_files(
     user: sqlite3.Row = Depends(current_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FilePage:
-    conditions = ["f.uploaded_by = ?"]
+    conditions = ["f.uploaded_by = ?", "f.deleted_at IS NULL"]
     params: list[object] = [user["id"]]
     if 状态 is not None:
         conditions.append("f.status = ?")
@@ -753,7 +782,7 @@ def search_files(
             total = db.execute(
                 "SELECT COUNT(*) FROM files AS f "  # noqa: S608 - 条件由内部函数生成
                 "JOIN courses AS c ON c.id = f.course_id "
-                f"WHERE f.status = 'approved' AND ({clause})",
+                f"WHERE f.status = 'approved' AND f.deleted_at IS NULL AND ({clause})",
                 params,
             ).fetchone()[0]
             rows = db.execute(
@@ -762,7 +791,7 @@ def search_files(
                        f.mime_type, f.sha256, f.status,
                        c.name AS course_name, c.college, c.semester, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
-                WHERE f.status = 'approved' AND ({clause})
+                WHERE f.status = 'approved' AND f.deleted_at IS NULL AND ({clause})
                 ORDER BY {order} LIMIT ? OFFSET ?
                 """,  # noqa: S608 - 条件与排序都来自内部白名单
                 (*params, page_size, (page - 1) * page_size),
@@ -794,7 +823,7 @@ def review_file(
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     cursor = db.execute(
-        "UPDATE files SET status = ? WHERE id = ?",
+        "UPDATE files SET status = ? WHERE id = ? AND deleted_at IS NULL",
         (review.status, file_id),
     )
     if cursor.rowcount == 0:
@@ -818,3 +847,174 @@ def review_file(
         (file_id,),
     ).fetchone()
     return file_response(row)
+
+
+trash_router = APIRouter(tags=["回收站"])
+
+TRASH_COLUMNS = """
+    f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
+    f.status, f.deleted_at, f.filename,
+    c.name AS course_name,
+    d.username AS deleted_by_name
+"""
+
+
+def trash_response(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "course_id": row["course_id"],
+        "course_name": row["course_name"],
+        "title": row["title"],
+        "original_name": row["original_name"],
+        "size": row["size"],
+        "upload_time": row["upload_time"],
+        "status": row["status"],
+        "deleted_at": row["deleted_at"],
+        "deleted_by_name": row["deleted_by_name"],
+    }
+
+
+@trash_router.get("/api/trash", include_in_schema=False)
+@trash_router.get(
+    "/接口/回收站",
+    response_model=TrashFilePage,
+    summary="查看回收站",
+    operation_id="查看回收站",
+)
+def list_trash(
+    关键词: str = Query("", max_length=80, description="按标题、文件名、课程或删除人筛选"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> TrashFilePage:
+    conditions = ["f.deleted_at IS NOT NULL"]
+    params: list[object] = []
+    keyword = 关键词.strip()
+    if keyword:
+        pattern = f"%{escape_like(keyword)}%"
+        conditions.append(
+            "(f.title LIKE ? ESCAPE '\\' OR f.original_name LIKE ? ESCAPE '\\'"
+            " OR c.name LIKE ? ESCAPE '\\' OR d.username LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern] * 4)
+    where = " AND ".join(conditions)
+    # 课程或删除人可能已经不存在（课程被删、用户被删），所以两个都用 LEFT JOIN。
+    joins = (
+        "LEFT JOIN courses AS c ON c.id = f.course_id "
+        "LEFT JOIN users AS d ON d.id = f.deleted_by"
+    )
+    total = db.execute(
+        f"SELECT COUNT(*) FROM files AS f {joins} WHERE {where}",  # noqa: S608 - 条件由内部白名单拼接
+        params,
+    ).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT {TRASH_COLUMNS}
+        FROM files AS f {joins} WHERE {where}
+        ORDER BY f.deleted_at DESC, f.id DESC LIMIT ? OFFSET ?
+        """,  # noqa: S608 - 条件由内部白名单拼接
+        (*params, page_size, (page - 1) * page_size),
+    ).fetchall()
+    return TrashFilePage(
+        **page_response([trash_response(row) for row in rows], total, page, page_size)
+    )
+
+
+@trash_router.post(
+    "/api/trash/{file_id}/restore",
+    include_in_schema=False,
+)
+@trash_router.post(
+    "/接口/回收站/{file_id}/恢复",
+    response_model=dict,
+    summary="恢复回收站资料",
+    operation_id="恢复回收站资料",
+)
+def restore_trashed_file(
+    file_id: int,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    row = db.execute(
+        "SELECT course_id, original_name FROM files "
+        "WHERE id = ? AND deleted_at IS NOT NULL",
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="回收站里没有这条资料")
+    try:
+        db.execute(
+            "UPDATE files SET deleted_at = NULL, deleted_by = NULL WHERE id = ?",
+            (file_id,),
+        )
+        record_audit(
+            db,
+            user["id"],
+            "restore",
+            "file",
+            file_id,
+            f"从回收站恢复：{row['original_name']}",
+        )
+        db.commit()
+    except sqlite3.IntegrityError as error:
+        # 内容去重索引在「同课程 + 同 sha256 + 未删除」上唯一。恢复时若这门课已经有
+        # 一份内容相同的资料，就会撞上它，此时应提示用户而不是报 500。
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="该课程已存在内容相同的资料，无法恢复",
+        ) from error
+    restored = db.execute(
+        """
+        SELECT id, course_id, title, original_name, size, upload_time,
+               mime_type, sha256, status, uploaded_by
+        FROM files WHERE id = ?
+        """,
+        (file_id,),
+    ).fetchone()
+    return file_response(restored)
+
+
+@trash_router.delete(
+    "/api/trash/{file_id}",
+    include_in_schema=False,
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@trash_router.delete(
+    "/接口/回收站/{file_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="彻底删除回收站资料",
+    operation_id="彻底删除回收站资料",
+)
+def purge_trashed_file(
+    file_id: int,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    row = db.execute(
+        "SELECT filename, original_name FROM files "
+        "WHERE id = ? AND deleted_at IS NOT NULL",
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="回收站里没有这条资料")
+    # 与删除课程走同一套暂存机制：先把文件改名移开，数据库删除提交成功后才真正
+    # unlink；中途失败会回滚并把文件改回来。
+    staged = stage_stored_files([row], db)
+    try:
+        db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        record_audit(
+            db,
+            user["id"],
+            "purge",
+            "file",
+            file_id,
+            f"彻底删除：{row['original_name']}",
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        restore_staged_files(staged, db)
+        raise
+    discard_staged_files(staged, db)

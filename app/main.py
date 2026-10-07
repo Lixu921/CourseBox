@@ -19,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
-from app.api.files import download_router, search_router
+from app.api.files import download_router, search_router, trash_router
 from app.api.files import router as files_router
 from app.api.users import router as users_router
 from app.config import database_path, get_settings, uploads_path
@@ -29,6 +29,7 @@ from app.db import (
     get_db,
     init_db,
     purge_audit_logs,
+    purge_deleted_files,
     purge_login_attempts,
 )
 from app.ratelimit import EXEMPT_PATHS, client_key, rate_limiter
@@ -81,12 +82,16 @@ try:
     startup_settings = get_settings()
     purge_audit_logs(startup_db, startup_settings.audit_retention_days)
     purge_login_attempts(startup_db, LOGIN_ATTEMPT_RETENTION_SECONDS)
+    # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
+    # （py -m app.maintenance）覆盖长期不重启的部署。
+    purge_deleted_files(startup_db, startup_settings.trash_retention_days)
 finally:
     startup_db_generator.close()
 app.include_router(courses_router)
 app.include_router(files_router)
 app.include_router(download_router)
 app.include_router(search_router)
+app.include_router(trash_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(audit_router)

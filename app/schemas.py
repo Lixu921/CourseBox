@@ -182,6 +182,25 @@ class CourseQuota(BaseModel):
     disk_free: int | None = None
 
 
+class TrashFile(BaseModel):
+    """回收站里的一条资料。deleted_at 是移入回收站的时间，删除人可能已不存在。"""
+
+    id: int
+    course_id: int
+    course_name: str | None = None
+    title: str
+    original_name: str
+    size: int
+    upload_time: str
+    status: str
+    deleted_at: str
+    deleted_by_name: str | None = None
+
+
+class TrashFilePage(PageInfo):
+    items: list[TrashFile]
+
+
 class UserPage(PageInfo):
     items: list[UserAdmin]
 

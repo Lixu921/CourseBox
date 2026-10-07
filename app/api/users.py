@@ -22,7 +22,8 @@ ROLE_LABELS = {"admin": "管理员", "uploader": "上传者", "viewer": "浏览�
 
 USER_COLUMNS = """
     u.id, u.username, u.role, u.is_active, u.created_at,
-    (SELECT COUNT(*) FROM files AS f WHERE f.uploaded_by = u.id) AS upload_count
+    (SELECT COUNT(*) FROM files AS f
+     WHERE f.uploaded_by = u.id AND f.deleted_at IS NULL) AS upload_count
 """
 
 

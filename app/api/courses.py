@@ -78,7 +78,7 @@ def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> Cour
         SELECT c.id, c.name, c.college, c.semester,
                COUNT(CASE WHEN f.status = 'approved' THEN f.id END) AS file_count
         FROM courses AS c
-        LEFT JOIN files AS f ON f.course_id = c.id
+        LEFT JOIN files AS f ON f.course_id = c.id AND f.deleted_at IS NULL
         WHERE c.id = ?
         GROUP BY c.id
         """,

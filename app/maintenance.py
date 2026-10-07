@@ -1,4 +1,4 @@
-"""数据库日常维护：清理过期审计日志与登录失败记录。
+"""数据库日常维护：清理过期审计日志、登录失败记录与回收站。
 
 用法：`py -m app.maintenance`，可交给计划任务定期执行。
 """
@@ -10,11 +10,12 @@ from app.db import (
     LOGIN_ATTEMPT_RETENTION_SECONDS,
     init_db,
     purge_audit_logs,
+    purge_deleted_files,
     purge_login_attempts,
 )
 
 
-def run() -> tuple[int, int]:
+def run() -> tuple[int, int, int]:
     settings = get_settings()
     connection = sqlite3.connect(database_path())
     try:
@@ -23,17 +24,22 @@ def run() -> tuple[int, int]:
         removed_attempts = purge_login_attempts(
             connection, LOGIN_ATTEMPT_RETENTION_SECONDS
         )
+        # 回收站里的资料到期后在这里真正从磁盘删除。
+        removed_trash = purge_deleted_files(connection, settings.trash_retention_days)
     finally:
         connection.close()
-    return removed_audit, removed_attempts
+    return removed_audit, removed_attempts, removed_trash
 
 
 def main() -> int:
-    removed_audit, removed_attempts = run()
+    removed_audit, removed_attempts, removed_trash = run()
+    settings = get_settings()
     print(
-        f"审计日志保留 {get_settings().audit_retention_days} 天，"
+        f"审计日志保留 {settings.audit_retention_days} 天，"
         f"已清理 {removed_audit} 条；"
-        f"登录失败记录已清理 {removed_attempts} 条。"
+        f"登录失败记录已清理 {removed_attempts} 条；"
+        f"回收站保留 {settings.trash_retention_days} 天，"
+        f"已彻底删除 {removed_trash} 条资料。"
     )
     return 0
 

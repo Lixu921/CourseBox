@@ -23,6 +23,8 @@ DEFAULT_LOGIN_LOCKOUT_SECONDS = 300
 DEFAULT_MAX_COURSE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_AUDIT_RETENTION_DAYS = 90
+# 回收站保留天数：删掉的资料先在这里放着，超期才真正从磁盘删除。
+DEFAULT_TRASH_RETENTION_DAYS = 30
 # 每分钟每 IP 的请求上限。默认值刻意放宽：正常浏览远达不到，
 # 只用来挡住脚本级的突发流量，避免误伤多人共用同一个出口 IP 的校园网。
 DEFAULT_RATE_LIMIT_ENABLED = True
@@ -208,6 +210,7 @@ class Settings:
     max_course_bytes: int
     max_total_bytes: int
     audit_retention_days: int
+    trash_retention_days: int
     rate_limit_enabled: bool
     rate_limit_per_minute: int
 
@@ -257,6 +260,9 @@ def get_settings() -> Settings:
         ),
         audit_retention_days=_positive_int(
             "COURSEBOX_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS
+        ),
+        trash_retention_days=_positive_int(
+            "COURSEBOX_TRASH_RETENTION_DAYS", DEFAULT_TRASH_RETENTION_DAYS
         ),
         rate_limit_enabled=_bool_from_env(
             "COURSEBOX_RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED
