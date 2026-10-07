@@ -23,6 +23,10 @@ DEFAULT_LOGIN_LOCKOUT_SECONDS = 300
 DEFAULT_MAX_COURSE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_AUDIT_RETENTION_DAYS = 90
+# 每分钟每 IP 的请求上限。默认值刻意放宽：正常浏览远达不到，
+# 只用来挡住脚本级的突发流量，避免误伤多人共用同一个出口 IP 的校园网。
+DEFAULT_RATE_LIMIT_ENABLED = True
+DEFAULT_RATE_LIMIT_PER_MINUTE = 300
 
 logger = logging.getLogger("coursebox.config")
 
@@ -191,6 +195,8 @@ class Settings:
     max_course_bytes: int
     max_total_bytes: int
     audit_retention_days: int
+    rate_limit_enabled: bool
+    rate_limit_per_minute: int
 
     @property
     def is_production(self) -> bool:
@@ -238,5 +244,11 @@ def get_settings() -> Settings:
         ),
         audit_retention_days=_positive_int(
             "COURSEBOX_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS
+        ),
+        rate_limit_enabled=_bool_from_env(
+            "COURSEBOX_RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED
+        ),
+        rate_limit_per_minute=_positive_int(
+            "COURSEBOX_RATE_LIMIT_PER_MINUTE", DEFAULT_RATE_LIMIT_PER_MINUTE
         ),
     )

@@ -86,8 +86,10 @@ function formatFileSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} 兆字节`;
 }
 
-function formatUploadTime(value) {
-  if (!value) return "上传时间未知";
+// 接口返回的时间是 UTC 字符串（形如 "2026-10-07 12:17:18"），补上 Z 标明时区后再按浏览器本地时区展示。
+// 直接显示原始字符串会让北京时间早 8 小时，所以任何时间字段都必须走这里。
+function formatDateTime(value) {
+  if (!value) return "";
   const date = new Date(`${value.replace(" ", "T")}Z`);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
@@ -463,7 +465,7 @@ function renderFiles(data, courseId) {
     titleLine.append(title, statusBadge(file.status));
     const metadata = document.createElement("p");
     metadata.className = "file-meta";
-    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatUploadTime(file.upload_time)}`;
+    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatDateTime(file.upload_time) || "上传时间未知"}`;
     const technical = document.createElement("p");
     technical.className = "file-meta file-technical";
     technical.textContent = `${file.mime_type || "未知类型"}${file.sha256 ? ` · SHA-256 ${file.sha256.slice(0, 12)}…` : ""}`;
@@ -947,7 +949,9 @@ function renderUserRow(item) {
   title.append(" ", stateBadge);
   const meta = document.createElement("p");
   meta.className = "user-meta";
-  const created = item.created_at ? ` · 创建于 ${item.created_at}` : "";
+  const created = item.created_at
+    ? ` · 创建于 ${formatDateTime(item.created_at)}`
+    : "";
   meta.textContent = `角色：${ROLE_LABELS[item.role] || item.role} · 上传 ${item.upload_count} 份资料${created}`;
   identity.append(title, meta);
 
@@ -1106,7 +1110,7 @@ function renderMyUploadRow(file) {
   titleLine.append(title, statusBadge(file.status));
   const metadata = document.createElement("p");
   metadata.className = "file-meta";
-  metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatUploadTime(file.upload_time)}`;
+  metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatDateTime(file.upload_time) || "上传时间未知"}`;
   const course = document.createElement("p");
   course.className = "file-meta";
   course.textContent = `所属课程：${file.course?.name || "未知课程"}`;

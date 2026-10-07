@@ -30,6 +30,7 @@ from app.db import (
     purge_audit_logs,
     purge_login_attempts,
 )
+from app.ratelimit import EXEMPT_PATHS, client_key, rate_limiter
 
 
 class JsonFormatter(logging.Formatter):
@@ -95,6 +96,86 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 def request_id_for(request: Request) -> str:
     candidate = request.headers.get("X-Request-ID", "")
     return candidate if REQUEST_ID_PATTERN.fullmatch(candidate) else uuid.uuid4().hex
+
+
+# 全站兜底的安全响应头。用 setdefault 而非直接赋值：预览接口会按文件类型
+# 自己设更严格的 CSP，不能被这里覆盖掉。
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    # 在线预览靠同源 iframe 承载，所以只能是 SAMEORIGIN，不能用 DENY。
+    "X-Frame-Options": "SAMEORIGIN",
+    "Referrer-Policy": "no-referrer",
+}
+
+# 页面没有内联脚本、没有内联样式、也没有外部 CDN，所以 CSP 可以收紧到只允许同源。
+PAGE_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data:; "
+    "style-src 'self'; "
+    "script-src 'self'; "
+    "frame-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'self'"
+)
+
+
+# 注意中间件顺序：Starlette 里「后注册的在最外层」，所以下面两个必须写在
+# request_logging_middleware 之前，限流返回的 429 才会带上 request_id 与安全头。
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    settings = get_settings()
+    if not settings.rate_limit_enabled or request.url.path in EXEMPT_PATHS:
+        return await call_next(request)
+
+    allowed, retry_after = rate_limiter.hit(
+        client_key(request), settings.rate_limit_per_minute
+    )
+    if allowed:
+        return await call_next(request)
+
+    request_id = getattr(request.state, "request_id", "")
+    logger.warning(
+        "rate limit exceeded",
+        extra={
+            "event": "rate_limited",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "client": client_key(request),
+        },
+    )
+    message = "请求过于频繁，请稍后再试"
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "error": {
+                "code": "too_many_requests",
+                "message": message,
+                "request_id": request_id,
+            },
+            "detail": message,
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    # CSP 只加给 HTML 页面：文件下载与预览各自带媒体类型，加 CSP 可能干扰
+    # 浏览器内置的 PDF/图片查看器。
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Content-Security-Policy", PAGE_CSP)
+    # 生产环境一律加 HSTS；http 源下浏览器会忽略它，本地开发不受影响。
+    if get_settings().is_production:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.middleware("http")

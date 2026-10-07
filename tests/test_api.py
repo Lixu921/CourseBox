@@ -5,9 +5,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.ratelimit import reset_rate_limits
 
 
 def create_client() -> TestClient:
+    # 限流按客户端 IP 计数，而所有测试都来自同一个 TestClient 主机；
+    # 每个用例开头清空计数，避免测试之间互相把对方顶到 429。
+    reset_rate_limits()
     return TestClient(app)
 
 
@@ -1851,3 +1855,57 @@ def test_backup_script_entrypoint_is_importable():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert callable(module.main)
+
+
+def test_security_headers_on_pages_and_static_files():
+    client = create_client()
+
+    homepage = client.get("/")
+    assert homepage.status_code == 200
+    assert homepage.headers["X-Content-Type-Options"] == "nosniff"
+    assert homepage.headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert homepage.headers["Referrer-Policy"] == "no-referrer"
+    csp = homepage.headers["Content-Security-Policy"]
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'self'" in csp
+    assert "object-src 'none'" in csp
+
+    # 静态资源也要带兜底安全头，但 CSP 只给 HTML 页面。
+    script = client.get("/static/app.js")
+    assert script.status_code == 200
+    assert script.headers["X-Content-Type-Options"] == "nosniff"
+    assert "Content-Security-Policy" not in script.headers
+
+
+def test_rate_limit_returns_429_with_request_id(monkeypatch):
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_PER_MINUTE", "5")
+    client = create_client()
+
+    for _ in range(5):
+        assert client.get("/接口/课程").status_code == 200
+
+    blocked = client.get("/接口/课程")
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "too_many_requests"
+    assert blocked.json()["error"]["message"] == "请求过于频繁，请稍后再试"
+    assert int(blocked.headers["Retry-After"]) >= 1
+    # 429 也要带 request_id 与安全头，否则线上排查会断线索（依赖中间件注册顺序）。
+    assert blocked.headers["X-Request-ID"]
+    assert blocked.headers["X-Frame-Options"] == "SAMEORIGIN"
+
+
+def test_rate_limit_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_ENABLED", "false")
+    client = create_client()
+
+    for _ in range(4):
+        assert client.get("/接口/课程").status_code == 200
+
+
+def test_health_check_is_exempt_from_rate_limit(monkeypatch):
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_PER_MINUTE", "2")
+    client = create_client()
+
+    for _ in range(6):
+        assert client.get("/接口/健康").status_code == 200
