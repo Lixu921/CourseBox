@@ -8,3 +8,7 @@ config.json
 .env
 .pytest_cache/
 .pytest-tmp-run/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/

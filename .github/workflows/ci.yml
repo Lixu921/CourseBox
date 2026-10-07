@@ -47,4 +47,13 @@ jobs:
         run: python -m ruff check .
 
       - name: 运行测试
+        if: matrix.python-version != '3.13'
         run: python -m pytest -q
+
+      # 覆盖率只在最新的解释器上算一次：它是代码属性，跟 3.11/3.12/3.13 无关，
+      # 三个版本各跑一遍只是白烧时间。实测 91%，门槛取 90%。
+      - name: 运行测试并检查覆盖率门槛
+        if: matrix.python-version == '3.13'
+        run: |
+          python -m pytest -q \
+            --cov=app --cov-report=term-missing --cov-fail-under=90

@@ -18,12 +18,26 @@ dependencies = [
 dev = [
     "httpx==0.28.1",
     "pytest==9.1.1",
+    "pytest-cov==7.1.0",
     "ruff>=0.12,<1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# 显式声明导入路径："." 让 tests 能 import app，"tests" 让各测试文件能
+# from conftest import ...。不依赖 pytest 隐式的 sys.path 插入，也不依赖
+# 调用方式是 python -m pytest 还是 pytest。
+pythonpath = [".", "tests"]
+# 覆盖率门槛放在 CI 里显式传参（见 .github/workflows/ci.yml），
+# 不写进 addopts：本地没装 pytest-cov 时不该连测试都跑不起来。
+# 当前实测 91%，门槛取 90% 留一点余量。
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.ruff]
 target-version = "py311"
