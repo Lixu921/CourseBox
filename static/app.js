@@ -13,6 +13,11 @@ const courseContext = document.querySelector("#course-context");
 const fileList = document.querySelector("#file-list");
 const fileCount = document.querySelector("#file-count");
 const filePagination = document.querySelector("#file-pagination");
+const fileToolbar = document.querySelector("#file-toolbar");
+const fileSelectAll = document.querySelector("#file-select-all");
+const fileSelectionCount = document.querySelector("#file-selection-count");
+const archiveSelectedButton = document.querySelector("#archive-selected");
+const archiveAllButton = document.querySelector("#archive-all");
 const courseActions = document.querySelector("#course-actions");
 const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
@@ -62,6 +67,11 @@ const auditFilterKeyword = document.querySelector("#audit-filter-keyword");
 const auditFilterAction = document.querySelector("#audit-filter-action");
 const auditFilterEntity = document.querySelector("#audit-filter-entity");
 const auditFilterButton = document.querySelector("#audit-filter-button");
+const trashPanel = document.querySelector("#trash-panel");
+const trashList = document.querySelector("#trash-list");
+const trashPagination = document.querySelector("#trash-pagination");
+const trashFilterKeyword = document.querySelector("#trash-filter-keyword");
+const trashFilterButton = document.querySelector("#trash-filter-button");
 const searchCourse = document.querySelector("#search-course");
 const searchType = document.querySelector("#search-type");
 const searchStart = document.querySelector("#search-start");
@@ -82,6 +92,10 @@ const AUDIT_ACTION_LABELS = {
   login: "登录",
   logout: "退出登录",
   reset_password: "重置密码",
+  restore: "从回收站恢复",
+  purge: "彻底删除",
+  approved: "审核通过",
+  rejected: "审核拒绝",
 };
 const AUDIT_ENTITY_LABELS = { course: "课程", file: "资料", user: "用户" };
 // 与后端 PREVIEW_MEDIA_TYPES 保持一致，只预览确定不会执行脚本的类型。
@@ -93,9 +107,13 @@ let currentCourseId = null;
 let currentFilePage = 1;
 let currentUserPage = 1;
 let currentAuditPage = 1;
+let currentTrashPage = 1;
 let currentMyUploadPage = 1;
 let currentCourseKeyword = "";
 let currentSearchQuery = "";
+// 课程页里被勾选、准备打包下载的资料编号，以及当前这一页的资料编号。
+const selectedFileIds = new Set();
+let currentFileIds = [];
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -193,11 +211,13 @@ function updateAuthUI() {
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
   if (auditPanel) auditPanel.hidden = currentUser?.role !== "admin";
+  if (trashPanel) trashPanel.hidden = currentUser?.role !== "admin";
   if (myUploadsPanel) myUploadsPanel.hidden = !currentUser;
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
   ensureUserPanelLoaded();
   ensureAuditLoaded();
+  ensureTrashLoaded();
   ensureMyUploadsLoaded();
 }
 
@@ -222,10 +242,18 @@ function ensureAuditLoaded() {
   loadAudit(1);
 }
 
+function ensureTrashLoaded() {
+  if (!trashPanel || currentUser?.role !== "admin") return;
+  if (trashPanel.dataset.loaded === "1") return;
+  trashPanel.dataset.loaded = "1";
+  loadTrash(1);
+}
+
 // 切换账户时必须丢掉上一个账户的加载标记，否则会沿用旧列表。
 function resetPanelLoadFlags() {
   adminUserPanel?.removeAttribute("data-loaded");
   auditPanel?.removeAttribute("data-loaded");
+  trashPanel?.removeAttribute("data-loaded");
   myUploadsPanel?.removeAttribute("data-loaded");
 }
 
@@ -523,14 +551,27 @@ function renderFiles(data, courseId) {
   const files = data.items || [];
   fileList.innerHTML = "";
   fileCount.textContent = `${data.total} 份`;
+  currentFileIds = files.map((file) => file.id);
+  if (fileToolbar) fileToolbar.hidden = !files.length;
   if (!files.length) {
     showState(fileList, "这个课程还没有资料，上传第一份吧。");
     renderPagination(filePagination, null, () => {});
+    syncFileSelection();
     return;
   }
   files.forEach((file) => {
     const item = document.createElement("li");
     item.className = "file-row";
+    const select = document.createElement("input");
+    select.type = "checkbox";
+    select.className = "file-select";
+    select.checked = selectedFileIds.has(file.id);
+    select.setAttribute("aria-label", `选择「${file.title}」`);
+    select.addEventListener("change", () => {
+      if (select.checked) selectedFileIds.add(file.id);
+      else selectedFileIds.delete(file.id);
+      syncFileSelection();
+    });
     const details = document.createElement("div");
     details.className = "file-details";
     const titleLine = document.createElement("div");
@@ -581,9 +622,10 @@ function renderFiles(data, courseId) {
       actions.append(approve, reject);
     }
     actions.append(download);
-    item.append(details, actions);
+    item.append(select, details, actions);
     fileList.append(item);
   });
+  syncFileSelection();
   renderPagination(filePagination, data, (page) => loadCourseFiles(courseId, page));
 }
 
@@ -602,6 +644,54 @@ async function loadCourseFiles(courseId, page = 1) {
     showState(fileList, `${error.message}，请返回课程列表重试。`, true);
     fileCount.textContent = "";
   }
+}
+
+function syncFileSelection() {
+  const count = selectedFileIds.size;
+  if (fileSelectionCount) fileSelectionCount.textContent = count ? `已选 ${count} 份` : "";
+  if (archiveSelectedButton) archiveSelectedButton.disabled = count === 0;
+  if (fileSelectAll) {
+    const onPage = currentFileIds.filter((id) => selectedFileIds.has(id)).length;
+    fileSelectAll.checked = currentFileIds.length > 0 && onPage === currentFileIds.length;
+    // 只选了一部分时用「半选」状态，避免看起来像全选或全不选。
+    fileSelectAll.indeterminate = onPage > 0 && onPage < currentFileIds.length;
+  }
+}
+
+function archiveUrl(ids) {
+  const params = new URLSearchParams();
+  ids.forEach((id) => params.append("资料编号", String(id)));
+  const query = params.toString();
+  const base = `/api/courses/${encodeURIComponent(currentCourseId)}/archive`;
+  return query ? `${base}?${query}` : base;
+}
+
+function downloadArchive(ids) {
+  // 用原生导航触发下载，浏览器边收边写盘；若改用 fetch + blob，大课程会把整个
+  // 压缩包堆进页面内存。
+  const link = document.createElement("a");
+  link.href = archiveUrl(ids);
+  link.setAttribute("download", "");
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function initArchiveControls() {
+  if (!fileToolbar) return;
+  archiveSelectedButton?.addEventListener("click", () => {
+    if (selectedFileIds.size) downloadArchive([...selectedFileIds]);
+  });
+  archiveAllButton?.addEventListener("click", () => downloadArchive([]));
+  fileSelectAll?.addEventListener("change", () => {
+    // 「全选」只作用于当前这一页，已经跨页选中的资料不会被清掉。
+    if (fileSelectAll.checked) currentFileIds.forEach((id) => selectedFileIds.add(id));
+    else currentFileIds.forEach((id) => selectedFileIds.delete(id));
+    fileList.querySelectorAll(".file-select").forEach((box, index) => {
+      box.checked = selectedFileIds.has(currentFileIds[index]);
+    });
+    syncFileSelection();
+  });
 }
 
 async function editFile(file, courseId) {
@@ -1066,6 +1156,108 @@ function renderAuditRow(item) {
   return row;
 }
 
+async function loadTrash(page = 1) {
+  if (!trashList) return;
+  currentTrashPage = page;
+  showState(trashList, "正在加载回收站...");
+  trashPagination.innerHTML = "";
+  try {
+    const response = await fetch(`/api/trash?${trashQuery(page)}`);
+    if (!response.ok) throw new Error(await readError(response, "回收站加载失败。"));
+    renderTrash(await response.json());
+  } catch (error) {
+    showState(trashList, error.message || "回收站加载失败。", true);
+    trashPagination.innerHTML = "";
+  }
+}
+
+function trashQuery(page) {
+  const params = new URLSearchParams({ page: String(page), page_size: "10" });
+  const keyword = trashFilterKeyword.value.trim();
+  if (keyword) params.set("关键词", keyword);
+  return params;
+}
+
+function renderTrash(data) {
+  const records = data.items || [];
+  trashList.innerHTML = "";
+  if (!records.length) {
+    showState(trashList, "回收站是空的");
+    renderPagination(trashPagination, null, () => {});
+    return;
+  }
+  records.forEach((item) => trashList.append(renderTrashRow(item)));
+  renderPagination(trashPagination, data, (page) => loadTrash(page));
+}
+
+function renderTrashRow(item) {
+  const row = document.createElement("li");
+  row.className = "user-row";
+
+  const identity = document.createElement("div");
+  identity.className = "user-identity";
+  const title = document.createElement("h3");
+  title.textContent = item.title;
+  const badge = document.createElement("span");
+  badge.className = "status-badge status-inactive";
+  badge.textContent = "已删除";
+  title.append(" ", badge);
+
+  const meta = document.createElement("p");
+  meta.className = "user-meta";
+  const course = item.course_name || "（课程已删除）";
+  const deleter = item.deleted_by_name || "（账户已删除）";
+  meta.textContent =
+    `${item.original_name} · ${formatFileSize(item.size)} · ` +
+    `课程：${course} · 由 ${deleter} 于 ${formatDateTime(item.deleted_at)} 删除`;
+  identity.append(title, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "user-actions";
+
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "text-button";
+  restore.textContent = "恢复";
+  restore.addEventListener("click", () => restoreTrashFile(item));
+
+  const purge = document.createElement("button");
+  purge.type = "button";
+  purge.className = "text-button danger-button";
+  purge.textContent = "彻底删除";
+  purge.addEventListener("click", () => purgeTrashFile(item));
+
+  actions.append(restore, purge);
+  row.append(identity, actions);
+  return row;
+}
+
+async function restoreTrashFile(item) {
+  const response = await fetch(`/api/trash/${encodeURIComponent(item.id)}/restore`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "恢复失败。"));
+    return;
+  }
+  await loadTrash(currentTrashPage);
+}
+
+async function purgeTrashFile(item) {
+  const confirmed = window.confirm(
+    `彻底删除“${item.title}”吗？文件会从磁盘上真正删除，之后无法再恢复。`
+  );
+  if (!confirmed) return;
+  const response = await fetch(`/api/trash/${encodeURIComponent(item.id)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "彻底删除失败。"));
+    return;
+  }
+  await loadTrash(currentTrashPage);
+}
+
 function renderUserRow(item) {
   const isSelf = item.id === currentUser?.id;
   const row = document.createElement("li");
@@ -1366,6 +1558,12 @@ function initHomePage() {
     event.preventDefault();
     loadAudit(1);
   });
+  trashFilterButton?.addEventListener("click", () => loadTrash(1));
+  trashFilterKeyword?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadTrash(1);
+  });
   myUploadsStatus?.addEventListener("change", () => loadMyUploads(1));
   myUploadsRefreshButton?.addEventListener("click", () => loadMyUploads(currentMyUploadPage));
 
@@ -1395,6 +1593,8 @@ async function initCoursePage() {
   uploadForm.addEventListener("submit", (event) => uploadFiles(currentCourseId, event));
   fileInput.addEventListener("change", updateFileSelection);
   initDropZone();
+  selectedFileIds.clear();
+  initArchiveControls();
   try {
     const response = await fetch(`/api/courses/${encodeURIComponent(currentCourseId)}`);
     if (!response.ok) throw new Error("课程不存在");

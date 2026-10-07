@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>课盒子 · 课程资料共享</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/资源/图标.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/资源/样式.css?v={{asset_version}}">
 </head>
 <body>
   <header class="site-header" id="top">
@@ -186,6 +187,10 @@
           <option value="login">登录</option>
           <option value="logout">退出登录</option>
           <option value="reset_password">重置密码</option>
+          <option value="restore">从回收站恢复</option>
+          <option value="purge">彻底删除</option>
+          <option value="approved">审核通过</option>
+          <option value="rejected">审核拒绝</option>
         </select>
         <label class="sr-only" for="audit-filter-entity">按对象筛选</label>
         <select id="audit-filter-entity">
@@ -200,6 +205,21 @@
         <li class="state-message">正在加载操作记录...</li>
       </ul>
       <nav id="audit-pagination" class="pagination" aria-label="操作记录分页"></nav>
+    </section>
+    <section id="trash-panel" class="admin-panel" hidden aria-labelledby="trash-heading">
+      <div class="section-heading">
+        <h2 id="trash-heading">回收站</h2>
+        <span class="muted">删除的资料会在这里保留一段时间，期间可以恢复</span>
+      </div>
+      <div class="user-toolbar">
+        <label class="sr-only" for="trash-filter-keyword">按标题、文件名、课程或删除人筛选</label>
+        <input id="trash-filter-keyword" type="search" placeholder="按标题、文件名、课程或删除人筛选" autocomplete="off">
+        <button id="trash-filter-button" class="text-button" type="button">筛选</button>
+      </div>
+      <ul id="trash-list" class="user-list" aria-live="polite">
+        <li class="state-message">正在加载回收站...</li>
+      </ul>
+      <nav id="trash-pagination" class="pagination" aria-label="回收站分页"></nav>
     </section>
     <section id="my-uploads-panel" class="admin-panel" hidden aria-labelledby="my-uploads-heading">
       <div class="section-heading">
@@ -238,6 +258,6 @@
       <nav id="course-pagination" class="pagination" aria-label="课程分页"></nav>
     </section>
   </main>
-  <script src="/static/app.js"></script>
+  <script src="/资源/脚本.js?v={{asset_version}}"></script>
 </body>
 </html>

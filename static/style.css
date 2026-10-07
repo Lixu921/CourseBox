@@ -402,6 +402,31 @@ mark { background: #fff3c4; color: inherit; border-radius: 4px; padding: 0 2px; 
 .file-meta { color: var(--muted); font-size: 13.5px; margin: 0; overflow-wrap: anywhere; }
 .file-technical { font-size: 12px; margin-top: 3px; }
 
+/* ---------- 资料多选与打包下载 ---------- */
+.file-toolbar {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+}
+.checkbox-field {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font-size: 14px;
+  gap: 7px;
+}
+.checkbox-field input { accent-color: var(--accent); height: 16px; margin: 0; width: 16px; }
+.file-toolbar .muted { font-size: 13.5px; }
+/* 「打包下载整门课」推到最右边，和左边的选中操作分开。 */
+.file-toolbar #archive-all { margin-left: auto; }
+.file-select { accent-color: var(--accent); flex: 0 0 auto; height: 17px; margin: 0 -8px 0 0; width: 17px; }
+
 .status-badge { border-radius: 999px; display: inline-block; font-size: 12px; font-weight: 700; line-height: 1.4; padding: 3px 10px; white-space: nowrap; }
 .status-approved { background: #e2f7ec; color: #1d9a6c; }
 .status-pending { background: #fdf2dc; color: #b0731f; }

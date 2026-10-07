@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="课盒子">
+  <rect width="64" height="64" rx="14" fill="#14a08d"/>
+  <rect x="15" y="17" width="34" height="30" rx="5" fill="#ffffff" opacity=".2"/>
+  <path d="M23 27h18M23 34h18M23 41h11" stroke="#ffffff" stroke-width="4"
+        stroke-linecap="round" fill="none"/>
+</svg>

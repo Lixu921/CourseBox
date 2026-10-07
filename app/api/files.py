@@ -1,8 +1,11 @@
 import hashlib
 import logging
+import re
 import shutil
 import sqlite3
+import tempfile
 import uuid
+import zipfile
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -19,6 +22,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.api.auth import current_user, optional_user, require_roles
 from app.api.common import escape_like, page_response, parse_date
@@ -305,6 +309,24 @@ def remove_stored_file(path: Path | None) -> None:
         )
 
 
+def file_visibility(user: sqlite3.Row | None) -> tuple[str, list[object]]:
+    """当前用户能看到的资料范围，返回 SQL 片段与对应参数。
+
+    片段只由内部常量拼成，不含任何用户输入。管理员看全部、上传者额外看到自己
+    待审核的资料、其他人和访客只看已通过的。已删除（在回收站）的资料对所有人
+    都不再可见，要看去回收站面板。
+    """
+
+    clause = "f.status = 'approved'"
+    params: list[object] = []
+    if user is not None and user["role"] == "admin":
+        clause = "1 = 1"
+    elif user is not None and user["role"] == "uploader":
+        clause = "(f.status = 'approved' OR f.uploaded_by = ?)"
+        params.append(user["id"])
+    return f"({clause}) AND f.deleted_at IS NULL", params
+
+
 @router.get("/api/courses/{course_id}/files", include_in_schema=False)
 @router.get(
     "/接口/课程/{course_id}/资料",
@@ -322,15 +344,8 @@ def list_course_files(
     if not course_exists(course_id, db):
         raise HTTPException(status_code=404, detail="课程不存在")
 
-    visibility = "f.status = 'approved'"
-    params: list[object] = [course_id]
-    if user is not None and user["role"] == "admin":
-        visibility = "1 = 1"
-    elif user is not None and user["role"] == "uploader":
-        visibility = "(f.status = 'approved' OR f.uploaded_by = ?)"
-        params.append(user["id"])
-    # 回收站里的资料对所有人都不再可见（包括管理员），要看去回收站面板。
-    visibility = f"({visibility}) AND f.deleted_at IS NULL"
+    visibility, visibility_params = file_visibility(user)
+    params: list[object] = [course_id, *visibility_params]
     total = db.execute(
         f"SELECT COUNT(*) FROM files AS f WHERE f.course_id = ? AND {visibility}",  # noqa: S608 - 可见性片段来自内部常量
         params,
@@ -685,6 +700,122 @@ def preview_file(
         filename=row["original_name"],
         content_disposition_type="inline",
         headers=headers,
+    )
+
+
+# 一次打包的资料数量上限。SQLite 对单条语句的占位符数量有上限，课程资料量本来
+# 就小，给一个明确的上限比让用户撞到数据库报错更好。
+MAX_ARCHIVE_FILES = 300
+
+
+def unique_archive_name(name: str, used: set[str]) -> str:
+    """zip 内条目名去重：重名时在扩展名前插入 (1)、(2)……"""
+
+    if name.lower() not in used:
+        used.add(name.lower())
+        return name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    index = 1
+    while True:
+        candidate = f"{stem}({index}){suffix}"
+        if candidate.lower() not in used:
+            used.add(candidate.lower())
+            return candidate
+        index += 1
+
+
+def archive_filename(course_name: str) -> str:
+    """把课程名整理成安全的 zip 文件名。"""
+
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", course_name).strip(" .")
+    return f"{cleaned or '课程资料'}.zip"
+
+
+@download_router.get("/api/courses/{course_id}/archive", include_in_schema=False)
+@download_router.get(
+    "/接口/课程/{course_id}/打包下载",
+    summary="打包下载课程资料",
+    operation_id="打包下载课程资料",
+)
+def download_course_archive(
+    course_id: int,
+    资料编号: list[int] | None = Query(
+        None, description="要打包的资料编号，可重复传多次；不传表示整门课"
+    ),
+    user: sqlite3.Row | None = Depends(optional_user),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    """把选中的资料（不传编号则整门课）打成一个 zip 下发。
+
+    压缩包先写到磁盘上的临时文件再发送，避免大课程把整个包堆在内存里；下载结束
+    后由后台任务删掉临时文件。可见性与课程资料列表保持一致，所以待审核、已拒绝
+    或已进回收站的资料不会被打包。
+    """
+
+    if not course_exists(course_id, db):
+        raise HTTPException(status_code=404, detail="课程不存在")
+
+    visibility, params = file_visibility(user)
+    conditions = [visibility]
+    if 资料编号:
+        selected = list(dict.fromkeys(资料编号))
+        if len(selected) > MAX_ARCHIVE_FILES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"一次最多打包 {MAX_ARCHIVE_FILES} 份资料",
+            )
+        placeholders = ", ".join("?" for _ in selected)
+        conditions.append(f"f.id IN ({placeholders})")
+        params.extend(selected)
+    rows = db.execute(
+        f"""
+        SELECT f.id, f.filename, f.original_name
+        FROM files AS f
+        WHERE f.course_id = ? AND {' AND '.join(conditions)}
+        ORDER BY f.id
+        """,  # noqa: S608 - 条件由内部函数与占位符生成
+        [course_id, *params],
+    ).fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有可打包的资料")
+
+    archive = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    archive_path = Path(archive.name)
+    archive.close()
+    used: set[str] = set()
+    packed = 0
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for row in rows:
+                path = stored_file_path(row["filename"])
+                if path is None or not path.is_file():
+                    # 数据库有记录但磁盘文件缺失：跳过这一份，而不是让整包失败。
+                    continue
+                bundle.write(path, unique_archive_name(row["original_name"], used))
+                packed += 1
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    if not packed:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="资料文件已丢失，无法打包")
+
+    course = db.execute("SELECT name FROM courses WHERE id = ?", (course_id,)).fetchone()
+    record_audit(
+        db,
+        user["id"] if user else None,
+        "download",
+        "course",
+        course_id,
+        f"打包下载 {packed} 份资料",
+    )
+    db.commit()
+    return FileResponse(
+        archive_path,
+        filename=archive_filename(course["name"] if course else ""),
+        media_type="application/zip",
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
     )
 
 

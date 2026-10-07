@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>课程资料 · 课盒子</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/资源/图标.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/资源/样式.css?v={{asset_version}}">
 </head>
 <body>
   <header class="site-header" id="top">
@@ -81,6 +82,15 @@
           <h2 id="files-heading">资料列表</h2>
           <span id="file-count" class="muted"></span>
         </div>
+        <div id="file-toolbar" class="file-toolbar" hidden>
+          <label class="checkbox-field">
+            <input id="file-select-all" type="checkbox">
+            <span>全选本页</span>
+          </label>
+          <span id="file-selection-count" class="muted"></span>
+          <button id="archive-selected" class="text-button" type="button" disabled>打包下载选中</button>
+          <button id="archive-all" class="text-button" type="button">打包下载整门课</button>
+        </div>
         <ul id="file-list" class="file-list" aria-live="polite">
           <li class="state-message">正在加载资料...</li>
         </ul>
@@ -101,6 +111,6 @@
       <div id="preview-body" class="preview-body"></div>
     </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/资源/脚本.js?v={{asset_version}}"></script>
 </body>
 </html>

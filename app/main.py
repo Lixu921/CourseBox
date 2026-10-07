@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -185,6 +186,26 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+# 静态资源的公开路径前缀（中文路径与兼容路径都算）。
+STATIC_PATH_PREFIXES = ("/static/", "/资源/")
+# 带版本号查询串的资源内容不会变，可以放心长期强缓存。
+IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+# HTML 必须每次回源校验：它里面写着当前资源的版本号，缓存住就会一直指向旧资源。
+PAGE_CACHE_CONTROL = "no-cache"
+
+
+@app.middleware("http")
+async def cache_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(STATIC_PATH_PREFIXES):
+        # 只有带版本号的地址才敢长期缓存；内容一变版本号就变，不会拿到旧文件。
+        if request.query_params.get("v"):
+            response.headers.setdefault("Cache-Control", IMMUTABLE_CACHE)
+        else:
+            response.headers.setdefault("Cache-Control", PAGE_CACHE_CONTROL)
+    return response
+
+
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     request_id = request_id_for(request)
@@ -284,6 +305,44 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 STATIC_PATH = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_PATH), name="legacy-static")
 
+# 参与版本号计算的资源文件。任何一个变了，页面里引用的地址就跟着变，从而绕过缓存。
+VERSIONED_ASSETS = ("style.css", "app.js")
+# 页面里用占位符代替版本号，避免每次改资源都要手改 HTML。
+ASSET_VERSION_PLACEHOLDER = "{{asset_version}}"
+
+_asset_version: str | None = None
+_page_cache: dict[str, str] = {}
+
+
+def asset_version() -> str:
+    """静态资源的内容指纹，取前 12 位十六进制；进程内只算一次。"""
+
+    global _asset_version
+    if _asset_version is None:
+        digest = hashlib.sha256()
+        for name in VERSIONED_ASSETS:
+            try:
+                digest.update((STATIC_PATH / name).read_bytes())
+            except OSError:
+                # 文件读不到时也要给一个稳定值，不能因为资源缺失就让页面打不开。
+                digest.update(name.encode("utf-8"))
+        _asset_version = digest.hexdigest()[:12]
+    return _asset_version
+
+
+def render_page(filename: str) -> HTMLResponse:
+    """读取页面、把资源版本号填进占位符，并加上禁止缓存的响应头。"""
+
+    version = asset_version()
+    cache_key = f"{filename}:{version}"
+    body = _page_cache.get(cache_key)
+    if body is None:
+        body = (STATIC_PATH / filename).read_text(encoding="utf-8")
+        body = body.replace(ASSET_VERSION_PLACEHOLDER, version)
+        _page_cache.clear()
+        _page_cache[cache_key] = body
+    return HTMLResponse(body, headers={"Cache-Control": PAGE_CACHE_CONTROL})
+
 
 @app.get("/资源/样式.css", include_in_schema=False)
 def stylesheet():
@@ -295,15 +354,27 @@ def script():
     return FileResponse(STATIC_PATH / "app.js", media_type="text/javascript")
 
 
+@app.get("/资源/图标.svg", include_in_schema=False)
+def favicon():
+    return FileResponse(STATIC_PATH / "favicon.svg", media_type="image/svg+xml")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    # 页面里已经声明了 SVG 图标，正常浏览器不会来请求这里；给一个空响应，
+    # 免得旧书签或直接访问在日志里一直刷 404。
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/", include_in_schema=False)
 def homepage():
-    return FileResponse(STATIC_PATH / "index.html")
+    return render_page("index.html")
 
 
 @app.get("/课程", include_in_schema=False)
 @app.get("/course", include_in_schema=False)
 def course_page():
-    return FileResponse(STATIC_PATH / "course.html")
+    return render_page("course.html")
 
 
 @app.get(
