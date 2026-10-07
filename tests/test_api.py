@@ -1,5 +1,11 @@
 import logging
+import os
+import re
 import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
@@ -3034,5 +3040,127 @@ def test_error_page_escapes_detail():
     # detail 可能来自用户可控的内容，拼进 HTML 前必须转义。
     assert "<script>" not in body
     assert "&lt;script&gt;" in body
+
+
+def _iter_api_routes(application):
+    """展开 FastAPI 延迟加载的子路由，拿到真正的 APIRoute 列表。
+
+    FastAPI 0.141 起 include_router 放进 app.routes 的是一个 _IncludedRouter 占位符，
+    真正的路由挂在它的 original_router 上，直接遍历 app.routes 会什么都看不到。
+    """
+    for route in application.routes:
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            yield from _iter_api_routes(original)
+        elif getattr(route, "methods", None) and getattr(route, "path", "").startswith(
+            "/api"
+        ):
+            yield route
+
+
+def _route_shape(path: str) -> str:
+    """把 /api/files/{file_id} 与 /api/files/${...} 归一成同一形状再比对。"""
+    return re.sub(r"\$?\{[^}]*\}", "{}", path)
+
+
+def _frontend_api_calls(source: str) -> list[tuple[str, str]]:
+    """从 app.js 里抽出所有指向 /api 的 fetch 调用，返回 (方法, 路径) 列表。"""
+    pattern = re.compile(r"fetch\(\s*(?:\"([^\"]*)\"|`([^`]*)`)")
+    matches = list(pattern.finditer(source))
+    calls: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        raw = match.group(1) or match.group(2) or ""
+        path = raw.split("?")[0]
+        if not path.startswith("/api"):
+            continue
+        # method 只在这条 fetch 到下一条 fetch 之间找，否则会把后面的调用算到前面。
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+        method_match = re.search(r"method:\s*\"([A-Z]+)\"", source[match.end() : end])
+        method = method_match.group(1) if method_match else "GET"
+        calls.append((method, path))
+    return calls
+
+
+def test_frontend_fetch_calls_match_registered_routes():
+    """app.js 里每个 fetch 的「路径 + 方法」都必须在后端真实存在。
+
+    回归背景：批量审核在后端因为路由注册顺序从 PATCH 改成了 POST，
+    但 app.js 忘了跟着改，线上点「批量通过 / 批量拒绝」会拿到 405。
+    pytest 打的是接口，前端 JS 平时不在测试范围内，所以这条专盯两者的接缝。
+    """
+    routes: dict[str, set[str]] = {}
+    for route in _iter_api_routes(app):
+        routes.setdefault(_route_shape(route.path), set()).update(
+            route.methods - {"HEAD", "OPTIONS"}
+        )
+    # 后端路由表本身要能解析出来，否则下面的比对会「因为空所以全过」。
+    assert routes.get("/api/courses") == {"GET", "POST"}, sorted(routes)
+
+    source = (Path(__file__).resolve().parent.parent / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    calls = _frontend_api_calls(source)
+    assert calls, "没从 app.js 解析出任何 /api 调用，解析规则可能已过期"
+    assert ("POST", "/api/files/batch/review") in calls
+
+    problems = []
+    for method, path in calls:
+        allowed = routes.get(_route_shape(path))
+        if allowed is None:
+            problems.append(f"{method} {path} —— 后端没有这个路径")
+        elif method not in allowed:
+            problems.append(
+                f"{method} {path} —— 后端只允许 {'/'.join(sorted(allowed))}"
+            )
+    assert not problems, "前端调用了后端不接受的接口：\n" + "\n".join(sorted(set(problems)))
+
+
+def _make_stale_probe(uploads: Path) -> Path:
+    """在 uploads 里造一个「过期」的健康检查探针，供启动清理逻辑消费。"""
+    uploads.mkdir(parents=True, exist_ok=True)
+    probe = uploads / ".health-stale-probe"
+    probe.write_bytes(b"")
+    stale = time.time() - 7200
+    os.utime(probe, (stale, stale))
+    return probe
+
+
+def test_importing_app_does_not_touch_uploads(tmp_path):
+    """导入 app.main 只是加载代码，不该删 uploads 里的任何文件。
+
+    回归背景：启动维护一度写在模块导入时执行，于是 pytest 收集测试（收集阶段就会
+    import app.main）顺手把 uploads 里的残留探针删了；任何文档工具、linter 只要
+    import 一次也会触发一遍破坏性维护。现在维护挪进了 lifespan。
+    """
+    uploads = tmp_path / "uploads"
+    probe = _make_stale_probe(uploads)
+
+    environment = dict(os.environ)
+    environment["COURSEBOX_DB"] = str(tmp_path / "import.db")
+    environment["COURSEBOX_UPLOAD_DIR"] = str(uploads)
+    completed = subprocess.run(
+        [sys.executable, "-c", "import app.main"],
+        cwd=Path(__file__).resolve().parent.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert probe.exists(), "导入 app.main 不应该删除 uploads 里的文件"
+
+
+def test_startup_maintenance_runs_when_app_starts(tmp_path, monkeypatch):
+    """真正启动应用（进入 lifespan）时才会执行启动维护。"""
+    uploads = tmp_path / "uploads"
+    probe = _make_stale_probe(uploads)
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "startup.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(uploads))
+    reset_initialized_databases()
+
+    with TestClient(app):
+        pass
+
+    assert not probe.exists(), "应用启动（lifespan）应该清掉过期的健康检查探针"
 
 

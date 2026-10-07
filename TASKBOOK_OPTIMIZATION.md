@@ -339,5 +339,32 @@ py -m pytest -q
 - **批量审核用 POST 而不是 PATCH。** 路由按注册顺序匹配，`PATCH /接口/资料/批量审核` 会先被
   `PATCH /接口/资料/{资料编号}` 吃掉，导致 422。
 
-最终状态：`py -m ruff check .` 全绿，`py -m pytest` 96 passed。
+最终状态：`py -m ruff check .` 全绿，`py -m pytest` 96 passed（随后按下面「第五轮收尾」一节补到 99）。
+
+### 第五轮收尾：一次前后端接口错位修复
+
+第五轮收完后又补了一次前端联调测试（用 jsdom 跑真实 `static/app.js` + 真实 HTML，32 项断言），
+当场抓到一个线上会 405 的 bug：
+
+- **批量审核前端还在发 PATCH。** 后端因为路由注册顺序的原因把批量审核改成了 POST（见上文第 5 项），
+  但 `static/app.js` 忘了跟着改，点「批量通过 / 批量拒绝」会拿到 405 Method Not Allowed。已改成 POST。
+- **顺手加了一条永久防线。** `tests/test_api.py::test_frontend_fetch_calls_match_registered_routes`
+  会把 `app.js` 里每个 `fetch` 的「路径 + 方法」抽出来，跟 `app.main` 的真实路由表逐一比对
+  （模板里的 `${...}` 与路由的 `{id}` 归一成同一形状）。前后端接缝以后不会再悄悄跑偏。
+  注意：FastAPI 0.141 起 `include_router` 放进 `app.routes` 的是 `_IncludedRouter` 占位符，
+  真实路由挂在它的 `original_router` 上，直接遍历 `app.routes` 会什么都看不到。
+
+另外修掉一个导入副作用：
+
+- **启动维护不再放在模块导入时执行。** 原先 `app/main.py` 在导入时就会清残留暂存文件、清健康检查
+  探针、按保留期清数据。也就是说，任何 `import app.main`（pytest 收集测试、文档工具、linter）
+  都会顺手删磁盘文件、清数据库，既意外又难排查。现在挪进 FastAPI 的 `lifespan`，只有真正启动
+  应用才执行。新增两条用例守住：`test_importing_app_does_not_touch_uploads`（用子进程 import 一次，
+  断言 uploads 里的文件还在）与 `test_startup_maintenance_runs_when_app_starts`（进入 lifespan
+  后过期探针被清掉）。
+
+那个 jsdom 联调脚本没有留在仓库里：它需要 Node + jsdom，跟本项目「不引入前端构建链」的约定冲突。
+前端与后端的接缝由上面那条 pytest 用例长期看住，不需要 Node。
+
+最终状态：`py -m ruff check .` 全绿，`py -m pytest` **99 passed**（96 → 99）。
 

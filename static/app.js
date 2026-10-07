@@ -776,7 +776,9 @@ async function batchReviewFiles(status) {
   const action = status === "approved" ? "通过" : "拒绝";
   if (!window.confirm(`确定${action}选中的 ${ids.length} 份资料吗？`)) return;
   const response = await fetch("/api/files/batch/review", {
-    method: "PATCH",
+    // 必须是 POST：后端把批量审核注册在 POST 上，写成 PATCH 会被
+    // /api/files/{资料编号} 抢走路由（见 app/api/files.py 的说明注释）。
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, status }),
   });

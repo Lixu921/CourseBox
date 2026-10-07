@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
+from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
 
@@ -72,28 +73,47 @@ configure_logging()
 # 配置错误（例如生产环境缺少管理员密码）必须在这里直接抛出，不能带着默认密码启动。
 get_settings()
 
+# 建表与迁移是幂等的，也不删任何磁盘文件，留在导入时执行没有副作用。
+init_db()
+
+
+def run_startup_maintenance() -> None:
+    """启动维护：清掉残留的暂存文件与健康检查探针，并按保留期清理数据。
+
+    刻意放在 lifespan 里而不是模块导入时执行：导入 app.main 只是「加载代码」，
+    不该顺手删磁盘文件、清数据库。否则测试收集、文档工具、linter 之类只要 import
+    一次就会触发一遍破坏性维护，既意外又难排查。
+    """
+    generator = get_db()
+    connection = next(generator)
+    try:
+        cleanup_staged_files(connection)
+        # 健康检查的探针文件正常建完就删，删不掉时会残留，启动时顺手清一遍。
+        cleanup_health_probes()
+        settings = get_settings()
+        purge_audit_logs(connection, settings.audit_retention_days)
+        purge_login_attempts(connection, LOGIN_ATTEMPT_RETENTION_SECONDS)
+        # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
+        # （py -m app.maintenance）覆盖长期不重启的部署。
+        purge_deleted_files(connection, settings.trash_retention_days)
+    finally:
+        generator.close()
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    run_startup_maintenance()
+    yield
+
+
 app = FastAPI(
     title="CourseBox 课盒子",
     docs_url="/接口文档",
     redoc_url="/接口说明",
     openapi_url="/接口定义",
     swagger_ui_oauth2_redirect_url="/接口文档/授权回调",
+    lifespan=lifespan,
 )
-init_db()
-startup_db_generator = get_db()
-startup_db = next(startup_db_generator)
-try:
-    cleanup_staged_files(startup_db)
-    # 健康检查的探针文件正常建完就删，删不掉时会残留，启动时顺手清一遍。
-    cleanup_health_probes()
-    startup_settings = get_settings()
-    purge_audit_logs(startup_db, startup_settings.audit_retention_days)
-    purge_login_attempts(startup_db, LOGIN_ATTEMPT_RETENTION_SECONDS)
-    # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
-    # （py -m app.maintenance）覆盖长期不重启的部署。
-    purge_deleted_files(startup_db, startup_settings.trash_retention_days)
-finally:
-    startup_db_generator.close()
 app.include_router(courses_router)
 app.include_router(files_router)
 app.include_router(download_router)
