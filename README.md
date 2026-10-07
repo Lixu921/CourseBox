@@ -95,11 +95,16 @@ Windows 也可以使用启动脚本：
 
 如果 Windows 的 `py` 或 `python` 命令被系统执行别名拦截，可先指定解释器：`$env:COURSEBOX_PYTHON = "C:\Python314\python.exe"`。
 
-在线访问：[课盒子](https://coursebox.onrender.com/)，[在线接口文档](https://coursebox.onrender.com/%E6%8E%A5%E5%8F%A3%E6%96%87%E6%A1%A3)。
+在线访问（点开就能用，无需部署）：
+
+- 应用首页（课盒子）：<https://coursebox.onrender.com/>
+- 在线接口文档：<https://coursebox.onrender.com/接口文档>
+
+> 免费实例闲置约 15 分钟后会自动休眠，长时间没人访问时首次打开需要等待约 30-60 秒，属正常现象。
 
 本地启动服务后，在运行服务的电脑上可以访问 `http://127.0.0.1:8000/`；同一局域网的同学请访问运行服务电脑的局域网 IPv4 地址，例如 `http://192.168.1.23:8000/`。启动脚本会打印可分享的局域网地址。若同学仍然无法访问，请确认双方连接的是同一个 Wi-Fi/局域网，并在 Windows 防火墙中允许 Python/Uvicorn 接受专用网络的入站连接；校园网可能会阻止设备之间互相访问。
 
-如果需要公网访问，可以[部署到 Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2FLixu921%2FCourseBox)，或先阅读[部署说明](DEPLOY.md)。部署完成后，请使用 Render 分配的 `onrender.com` 地址访问应用。
+如果需要重新部署或另建一份实例，可以[在 Render 上创建服务](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2FLixu921%2FCourseBox)，或先阅读[部署说明](DEPLOY.md)。注意：这个链接是**部署入口**，打开后会进入 Render 控制台（用来创建/更新服务），并不是课盒子本身；部署完成后请使用 Render 分配的 `onrender.com` 地址访问应用。
 
 网页和接口统一使用中文路径：课程页为 `/课程`，样式和脚本为 `/资源/样式.css`、`/资源/脚本.js`，课程接口为 `/接口/课程`，资料接口为 `/接口/课程/{编号}/资料`，下载地址为 `/接口/资料/{资料编号}/下载`，搜索接口为 `/接口/搜索?关键词=...`。课程和资料列表、搜索结果返回 `items`、`total`、`page`、`page_size` 和 `total_pages`，可用 `page` 与 `page_size` 分页。
 
