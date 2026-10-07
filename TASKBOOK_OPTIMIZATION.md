@@ -368,6 +368,12 @@ py -m pytest -q
   应用才执行。新增两条用例守住：`test_importing_app_does_not_touch_uploads`（用子进程 import 一次，
   断言 uploads 里的文件还在）与 `test_startup_maintenance_runs_when_app_starts`（进入 lifespan
   后过期探针被清掉）。
+- **这条改动依赖「启动命令会跑 lifespan」，三条部署路径都已确认**：`render.yaml` 的
+  `startCommand: uvicorn app.main:app ...`、`Dockerfile` 的 `CMD`、`scripts/start.ps1` 里的
+  `py -m uvicorn app.main:app`。uvicorn 默认就会执行 lifespan，所以生产环境的启动维护照旧。
+  **以后若把启动方式换成不触发 lifespan 的（例如自己写 `uvicorn.Server` 时关掉 lifespan，
+  或换 gunicorn 的同步 worker），启动维护会静默失效——改启动命令时要回头看这一条。**
+  `README.md` 里「除启动时清理外，也可以手动执行 `py -m app.maintenance`」仍然成立。
 
 那个 jsdom 联调脚本没有留在仓库里：它需要 Node + jsdom，跟本项目「不引入前端构建链」的约定冲突。
 前端与后端的接缝由上面那条 pytest 用例长期看住，不需要 Node。
