@@ -21,6 +21,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 
 from app.api.auth import current_user, optional_user, require_roles
+from app.api.common import escape_like, page_response, parse_date
 from app.config import PROJECT_ROOT, allowed_extensions, get_settings, uploads_path
 from app.db import (
     discard_staged_files,
@@ -29,7 +30,7 @@ from app.db import (
     restore_staged_files,
     stage_stored_files,
 )
-from app.schemas import FilePage, FileReview, FileUpdate
+from app.schemas import CourseQuota, FilePage, FileReview, FileUpdate
 
 router = APIRouter(tags=["资料"])
 logger = logging.getLogger("coursebox")
@@ -90,11 +91,12 @@ def format_bytes(size: int) -> str:
     return f"{size} 字节"
 
 
-def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
-    """返回本次上传允许的最大字节数与对应的超限提示。
+def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
+    """算出该课程当前的上传配额明细。
 
-    单文件大小、课程总量、站点总量、磁盘剩余空间四个上限取最紧的一个，
-    这样只需在流式写入时比较一次，超限原因也能准确告诉用户。
+    既用于上传时的超限判定，也用于上传前在界面上展示剩余空间，所以把四个上限
+    （单文件大小、课程总量、站点总量、磁盘剩余空间）全部算出来，取最紧的一条
+    作为本次允许的最大字节数——这样流式写入时只需比较一次，超限原因也准确。
     """
 
     settings = get_settings()
@@ -124,13 +126,14 @@ def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
                 "请先清理旧资料",
             )
         )
+    disk_free: int | None = None
     try:
         upload_root = uploads_path()
         # 上传目录可能还没建，退到项目根目录探测同一个磁盘。
         target = upload_root if upload_root.exists() else PROJECT_ROOT
-        free = shutil.disk_usage(target).free
+        disk_free = shutil.disk_usage(target).free
         candidates.append(
-            (free - settings.min_free_space, "服务器磁盘空间不足，暂时无法上传")
+            (disk_free - settings.min_free_space, "服务器磁盘空间不足，暂时无法上传")
         )
     except OSError as error:
         # 探测失败时放行，避免因为统计不到磁盘而完全无法上传。
@@ -139,7 +142,35 @@ def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
             error,
             extra={"event": "disk_check"},
         )
-    return min(candidates, key=lambda item: item[0])
+    allowed, reason = min(candidates, key=lambda item: item[0])
+    return {
+        "course_id": course_id,
+        "allowed_bytes": max(0, allowed),
+        "reason": reason,
+        "max_file_size": settings.max_file_size,
+        "course_limit": settings.max_course_bytes or None,
+        "course_used": used_course,
+        "course_remaining": (
+            max(0, settings.max_course_bytes - used_course)
+            if settings.max_course_bytes
+            else None
+        ),
+        "site_limit": settings.max_total_bytes or None,
+        "site_used": used_total,
+        "site_remaining": (
+            max(0, settings.max_total_bytes - used_total)
+            if settings.max_total_bytes
+            else None
+        ),
+        "disk_free": disk_free,
+    }
+
+
+def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
+    """上传时只关心最紧的那条上限，复用 upload_quota 的结果。"""
+
+    quota = upload_quota(course_id, db)
+    return quota["allowed_bytes"], quota["reason"]
 
 
 def file_response(row: sqlite3.Row) -> dict:
@@ -168,26 +199,10 @@ def search_response(row: sqlite3.Row) -> dict:
     return result
 
 
-def page_response(items: list, total: int, page: int, page_size: int) -> dict:
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size,
-    }
-
-
 def stored_file_path(filename: str) -> Path | None:
     root = uploads_path().resolve()
     path = (root / filename).resolve()
     return path if root in path.parents else None
-
-
-def escape_like(value: str) -> str:
-    """转义 LIKE 通配符，避免用户输入的 % 或 _ 变成通配。"""
-
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def fts_phrase(term: str) -> str:
@@ -242,19 +257,6 @@ SORT_ALIASES: dict[str, str] = {
     "标题": "name",
     "大小": "size",
 }
-
-
-def parse_date(value: str | None, field: str) -> date | None:
-    """把 YYYY-MM-DD 解析为日期，空值返回 None，非法值直接 422。"""
-
-    if value is None or not value.strip():
-        return None
-    try:
-        return date.fromisoformat(value.strip())
-    except ValueError as error:
-        raise HTTPException(
-            status_code=422, detail=f"{field}需要形如 2026-10-06 的日期"
-        ) from error
 
 
 def build_extra_filters(
@@ -337,6 +339,23 @@ def list_course_files(
     return FilePage(
         **page_response([file_response(row) for row in rows], total, page, page_size)
     )
+
+
+@router.get("/api/courses/{course_id}/quota", include_in_schema=False)
+@router.get(
+    "/接口/课程/{course_id}/配额",
+    response_model=CourseQuota,
+    summary="查看课程上传配额",
+    operation_id="查看课程上传配额",
+)
+def course_quota(
+    course_id: int,
+    user: sqlite3.Row = Depends(current_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> CourseQuota:
+    if not course_exists(course_id, db):
+        raise HTTPException(status_code=404, detail="课程不存在")
+    return CourseQuota(**upload_quota(course_id, db))
 
 
 @router.post(

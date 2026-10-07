@@ -166,5 +166,38 @@ class FilePage(PageInfo):
     items: list[dict]
 
 
+class CourseQuota(BaseModel):
+    """课程上传配额明细。limit / remaining 为 None 表示该项没有设置上限。"""
+
+    course_id: int
+    allowed_bytes: int
+    reason: str
+    max_file_size: int
+    course_limit: int | None = None
+    course_used: int
+    course_remaining: int | None = None
+    site_limit: int | None = None
+    site_used: int
+    site_remaining: int | None = None
+    disk_free: int | None = None
+
+
 class UserPage(PageInfo):
     items: list[UserAdmin]
+
+
+class AuditLog(BaseModel):
+    """一条操作记录。操作人被删除后 actor_id / actor_name 为 None。"""
+
+    id: int
+    actor_id: int | None = None
+    actor_name: str | None = None
+    action: str
+    entity_type: str
+    entity_id: int | None = None
+    detail: str | None = None
+    created_at: str
+
+
+class AuditLogPage(PageInfo):
+    items: list[AuditLog]

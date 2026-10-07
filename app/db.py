@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import threading
 import uuid
 from collections.abc import Generator
 from pathlib import Path
@@ -122,12 +123,42 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             connection.close()
 
 
+# 已经建过表的数据库文件（按绝对路径记）。init_db 里全是 CREATE TABLE/INDEX 与
+# PRAGMA journal_mode=WAL，在新建连接上跑一次要 100-230ms；每个请求都跑一遍会让
+# 单次请求从 2ms 涨到 200ms 以上，所以只在进程首次打开该库时做一次。
+_initialized_paths: set[str] = set()
+_init_lock = threading.Lock()
+
+
+def ensure_database(connection: sqlite3.Connection, path: Path) -> None:
+    """该数据库文件在本进程内首次使用时才做结构初始化，之后直接跳过。
+
+    注意：结构可以跳过，但连接级设置（row_factory、PRAGMA）每个新连接都必须重设，
+    否则取出来的行是普通 tuple，按列名取值会直接报错。
+    """
+
+    key = str(path.resolve())
+    with _init_lock:
+        if key in _initialized_paths:
+            configure_connection(connection)
+            return
+        init_db(connection)
+        _initialized_paths.add(key)
+
+
+def reset_initialized_databases() -> None:
+    """清掉初始化缓存。测试换了数据库文件后必须调用，否则新库不会被建表。"""
+
+    with _init_lock:
+        _initialized_paths.clear()
+
+
 def get_db() -> Generator[sqlite3.Connection, None, None]:
     path = database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, check_same_thread=False)
     try:
-        init_db(connection)
+        ensure_database(connection, path)
         yield connection
     finally:
         connection.close()
@@ -137,7 +168,11 @@ def configure_connection(connection: sqlite3.Connection) -> None:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 5000")
-    connection.execute("PRAGMA journal_mode = WAL")
+    # journal_mode 是数据库文件的持久属性，设一次就一直有效；而执行这条赋值语句本身
+    # 要重新协商锁，Windows 上实测约 100ms。所以只在还不是 WAL 时才切换。
+    current = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    if str(current).lower() != "wal":
+        connection.execute("PRAGMA journal_mode = WAL")
 
 
 def migrate_files_table(connection: sqlite3.Connection) -> None:

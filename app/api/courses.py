@@ -3,6 +3,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.auth import require_roles
+from app.api.common import escape_like, page_response
 from app.db import (
     discard_staged_files,
     get_db,
@@ -19,16 +20,6 @@ def row_to_course(row: sqlite3.Row) -> Course:
     return Course(**dict(row))
 
 
-def page_response(items: list, total: int, page: int, page_size: int) -> dict:
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size,
-    }
-
-
 @router.get("/api/courses", include_in_schema=False)
 @router.get(
     "/接口/课程",
@@ -37,18 +28,35 @@ def page_response(items: list, total: int, page: int, page_size: int) -> dict:
     operation_id="查看课程列表",
 )
 def list_courses(
+    关键词: str = Query("", max_length=80, description="按课程名、学院或学期筛选"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: sqlite3.Connection = Depends(get_db),
 ) -> CoursePage:
-    total = db.execute("SELECT COUNT(*) FROM courses").fetchone()[0]
+    conditions: list[str] = []
+    params: list[object] = []
+    keyword = 关键词.strip()
+    if keyword:
+        pattern = f"%{escape_like(keyword)}%"
+        # 学院/学期可能是 NULL，NULL LIKE 不成立；但这里是 OR，课程名命中仍会返回。
+        conditions.append(
+            "(name LIKE ? ESCAPE '\\' OR college LIKE ? ESCAPE '\\' "
+            "OR semester LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern, pattern])
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    total = db.execute(
+        f"SELECT COUNT(*) FROM courses {where}",  # noqa: S608 - 条件由内部白名单拼接
+        params,
+    ).fetchone()[0]
     offset = (page - 1) * page_size
     rows = db.execute(
-        """
-        SELECT id, name, college, semester FROM courses
+        f"""
+        SELECT id, name, college, semester FROM courses {where}
         ORDER BY id DESC LIMIT ? OFFSET ?
-        """,
-        (page_size, offset),
+        """,  # noqa: S608 - 条件由内部白名单拼接
+        (*params, page_size, offset),
     ).fetchall()
     items = [row_to_course(row).model_dump() for row in rows]
     return CoursePage(**page_response(items, total, page, page_size))

@@ -143,6 +143,8 @@ h2 { font-size: 22px; line-height: 1.3; margin-bottom: 0; font-weight: 700; }
   transition: box-shadow .2s, border-color .2s;
 }
 .search-bar:focus-within { border-color: var(--accent-light); box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow-md); }
+/* 课程列表上方的搜索框：不需要首页搜索栏那么大的留白。 */
+.course-search-bar { margin-bottom: 24px; max-width: 560px; }
 .search-bar input {
   min-width: 0;
   flex: 1;

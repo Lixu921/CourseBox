@@ -2,6 +2,9 @@ const courseList = document.querySelector("#course-list");
 const courseCount = document.querySelector("#course-count");
 const coursePagination = document.querySelector("#course-pagination");
 const courseHeading = document.querySelector("#course-heading");
+const courseSearchForm = document.querySelector("#course-search-form");
+const courseSearchInput = document.querySelector("#course-search-input");
+const courseSearchReset = document.querySelector("#course-search-reset");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
 const searchButton = searchForm?.querySelector("button");
@@ -15,6 +18,7 @@ const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
 const uploadMessage = document.querySelector("#upload-message");
 const uploadAccessNote = document.querySelector("#upload-access-note");
+const uploadQuota = document.querySelector("#upload-quota");
 const fileInput = document.querySelector("#file-input");
 const fileSelection = document.querySelector("#file-selection");
 const uploadProgress = document.querySelector("#upload-progress");
@@ -51,6 +55,13 @@ const myUploadsCount = document.querySelector("#my-uploads-count");
 const myUploadsPagination = document.querySelector("#my-uploads-pagination");
 const myUploadsStatus = document.querySelector("#my-uploads-status");
 const myUploadsRefreshButton = document.querySelector("#my-uploads-refresh");
+const auditPanel = document.querySelector("#audit-panel");
+const auditList = document.querySelector("#audit-list");
+const auditPagination = document.querySelector("#audit-pagination");
+const auditFilterKeyword = document.querySelector("#audit-filter-keyword");
+const auditFilterAction = document.querySelector("#audit-filter-action");
+const auditFilterEntity = document.querySelector("#audit-filter-entity");
+const auditFilterButton = document.querySelector("#audit-filter-button");
 const searchCourse = document.querySelector("#search-course");
 const searchType = document.querySelector("#search-type");
 const searchStart = document.querySelector("#search-start");
@@ -61,6 +72,18 @@ const searchResetButton = document.querySelector("#search-reset");
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
 const STATUS_LABELS = { approved: "已通过", pending: "待审核", rejected: "已拒绝" };
+// 操作记录里 action / entity_type 的取值来自后端白名单，这里只做展示用翻译。
+const AUDIT_ACTION_LABELS = {
+  create: "新建",
+  update: "修改",
+  delete: "删除",
+  download: "下载",
+  preview: "预览",
+  login: "登录",
+  logout: "退出登录",
+  reset_password: "重置密码",
+};
+const AUDIT_ENTITY_LABELS = { course: "课程", file: "资料", user: "用户" };
 // 与后端 PREVIEW_MEDIA_TYPES 保持一致，只预览确定不会执行脚本的类型。
 const PREVIEW_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif"]);
 const PREVIEW_DOCUMENT_EXTENSIONS = new Set(["pdf", "txt", "md"]);
@@ -69,7 +92,9 @@ let currentCourse = null;
 let currentCourseId = null;
 let currentFilePage = 1;
 let currentUserPage = 1;
+let currentAuditPage = 1;
 let currentMyUploadPage = 1;
+let currentCourseKeyword = "";
 let currentSearchQuery = "";
 
 function showState(container, message, isError = false) {
@@ -83,7 +108,8 @@ function showState(container, message, isError = false) {
 function formatFileSize(size) {
   if (size < 1024) return `${size} 字节`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} 千字节`;
-  return `${(size / (1024 * 1024)).toFixed(1)} 兆字节`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} 兆字节`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} 吉字节`;
 }
 
 // 接口返回的时间是 UTC 字符串（形如 "2026-10-07 12:17:18"），补上 Z 标明时区后再按浏览器本地时区展示。
@@ -166,10 +192,12 @@ function updateAuthUI() {
   if (loginPanel && currentUser) loginPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
+  if (auditPanel) auditPanel.hidden = currentUser?.role !== "admin";
   if (myUploadsPanel) myUploadsPanel.hidden = !currentUser;
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
   ensureUserPanelLoaded();
+  ensureAuditLoaded();
   ensureMyUploadsLoaded();
 }
 
@@ -187,9 +215,17 @@ function ensureMyUploadsLoaded() {
   loadMyUploads(1);
 }
 
+function ensureAuditLoaded() {
+  if (!auditPanel || currentUser?.role !== "admin") return;
+  if (auditPanel.dataset.loaded === "1") return;
+  auditPanel.dataset.loaded = "1";
+  loadAudit(1);
+}
+
 // 切换账户时必须丢掉上一个账户的加载标记，否则会沿用旧列表。
 function resetPanelLoadFlags() {
   adminUserPanel?.removeAttribute("data-loaded");
+  auditPanel?.removeAttribute("data-loaded");
   myUploadsPanel?.removeAttribute("data-loaded");
 }
 
@@ -253,10 +289,14 @@ async function logout() {
 function renderCourses(data) {
   const courses = data.items || [];
   courseList.innerHTML = "";
-  courseHeading.textContent = "全部课程";
+  courseHeading.textContent = currentCourseKeyword ? "课程搜索结果" : "全部课程";
   courseCount.textContent = `${data.total} 门`;
+  if (courseSearchReset) courseSearchReset.hidden = !currentCourseKeyword;
   if (!courses.length) {
-    showState(courseList, "还没有课程资料");
+    showState(
+      courseList,
+      currentCourseKeyword ? "没有匹配的课程" : "还没有课程资料"
+    );
     renderPagination(coursePagination, null, () => {});
     return;
   }
@@ -336,8 +376,10 @@ async function loadCourses(page = 1) {
   showState(courseList, "正在加载课程...");
   courseCount.textContent = "";
   coursePagination.innerHTML = "";
+  const params = new URLSearchParams({ page: String(page), page_size: "12" });
+  if (currentCourseKeyword) params.set("关键词", currentCourseKeyword);
   try {
-    const response = await fetch(`/api/courses?page=${page}&page_size=12`);
+    const response = await fetch(`/api/courses?${params}`);
     if (!response.ok) throw new Error("课程加载失败");
     renderCourses(await response.json());
   } catch (error) {
@@ -431,6 +473,39 @@ function updateUploadAccess() {
   if (!canUpload) {
     uploadAccessNote.textContent = currentUser ? "当前账户只有浏览权限。" : "登录后可以上传课程资料。";
   }
+  loadCourseQuota();
+}
+
+async function loadCourseQuota() {
+  if (!uploadQuota || !currentCourseId) return;
+  const canUpload = currentUser && ["admin", "uploader"].includes(currentUser.role);
+  if (!canUpload) {
+    uploadQuota.hidden = true;
+    return;
+  }
+  try {
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(currentCourseId)}/quota`
+    );
+    if (!response.ok) throw new Error(await readError(response, "剩余容量获取失败。"));
+    renderCourseQuota(await response.json());
+  } catch (error) {
+    uploadQuota.textContent = error.message || "剩余容量获取失败。";
+    uploadQuota.hidden = false;
+  }
+}
+
+function renderCourseQuota(quota) {
+  if (!uploadQuota) return;
+  const parts = [`本次最多可上传 ${formatFileSize(quota.allowed_bytes)}`];
+  if (quota.course_remaining != null) {
+    parts.push(`本课程剩余 ${formatFileSize(quota.course_remaining)}`);
+  }
+  if (quota.site_remaining != null) {
+    parts.push(`全站剩余 ${formatFileSize(quota.site_remaining)}`);
+  }
+  uploadQuota.textContent = `${parts.join(" · ")}（当前限制：${quota.reason}）`;
+  uploadQuota.hidden = false;
 }
 
 function statusBadge(status) {
@@ -828,6 +903,7 @@ async function uploadFiles(courseId, event) {
   if (succeeded) {
     await loadCourseFiles(courseId, 1);
     await refreshCourse();
+    await loadCourseQuota();
     if (currentUser) await loadMyUploads(1);
   }
   if (failures.length) {
@@ -926,6 +1002,68 @@ function renderUsers(data) {
   }
   users.forEach((item) => userList.append(renderUserRow(item)));
   renderPagination(userPagination, data, (page) => loadUsers(page));
+}
+
+async function loadAudit(page = 1) {
+  if (!auditList) return;
+  currentAuditPage = page;
+  showState(auditList, "正在加载操作记录...");
+  auditPagination.innerHTML = "";
+  try {
+    const response = await fetch(`/api/audit?${auditQuery(page)}`);
+    if (!response.ok) throw new Error(await readError(response, "操作记录加载失败。"));
+    renderAudit(await response.json());
+  } catch (error) {
+    showState(auditList, error.message || "操作记录加载失败。", true);
+    auditPagination.innerHTML = "";
+  }
+}
+
+function auditQuery(page) {
+  const params = new URLSearchParams({ page: String(page), page_size: "10" });
+  const keyword = auditFilterKeyword.value.trim();
+  if (keyword) params.set("关键词", keyword);
+  if (auditFilterAction.value) params.set("动作", auditFilterAction.value);
+  if (auditFilterEntity.value) params.set("对象", auditFilterEntity.value);
+  return params;
+}
+
+function renderAudit(data) {
+  const records = data.items || [];
+  auditList.innerHTML = "";
+  if (!records.length) {
+    showState(auditList, "没有匹配的操作记录");
+    renderPagination(auditPagination, null, () => {});
+    return;
+  }
+  records.forEach((item) => auditList.append(renderAuditRow(item)));
+  renderPagination(auditPagination, data, (page) => loadAudit(page));
+}
+
+function renderAuditRow(item) {
+  const row = document.createElement("li");
+  row.className = "user-row";
+
+  const identity = document.createElement("div");
+  identity.className = "user-identity";
+
+  const title = document.createElement("h3");
+  title.textContent = item.actor_name || "（账户已删除）";
+  const actionBadge = document.createElement("span");
+  actionBadge.className = "status-badge status-approved";
+  actionBadge.textContent = AUDIT_ACTION_LABELS[item.action] || item.action;
+  title.append(" ", actionBadge);
+
+  const meta = document.createElement("p");
+  meta.className = "user-meta";
+  const target = AUDIT_ENTITY_LABELS[item.entity_type] || item.entity_type;
+  const targetId = item.entity_id == null ? "" : ` #${item.entity_id}`;
+  const detail = item.detail ? ` · ${item.detail}` : "";
+  meta.textContent = `${target}${targetId} · ${formatDateTime(item.created_at)}${detail}`;
+
+  identity.append(title, meta);
+  row.append(identity);
+  return row;
 }
 
 function renderUserRow(item) {
@@ -1201,6 +1339,16 @@ function initHomePage() {
     control?.addEventListener("change", () => runSearch());
   });
   searchResetButton?.addEventListener("click", resetSearchFilters);
+  courseSearchForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    currentCourseKeyword = courseSearchInput.value.trim();
+    loadCourses(1);
+  });
+  courseSearchReset?.addEventListener("click", () => {
+    courseSearchInput.value = "";
+    currentCourseKeyword = "";
+    loadCourses(1);
+  });
   courseCreateForm?.addEventListener("submit", createCourse);
   userCreateForm?.addEventListener("submit", createUser);
   userFilterButton?.addEventListener("click", () => loadUsers(1));
@@ -1209,6 +1357,14 @@ function initHomePage() {
     if (event.key !== "Enter") return;
     event.preventDefault();
     loadUsers(1);
+  });
+  auditFilterButton?.addEventListener("click", () => loadAudit(1));
+  auditFilterAction?.addEventListener("change", () => loadAudit(1));
+  auditFilterEntity?.addEventListener("change", () => loadAudit(1));
+  auditFilterKeyword?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadAudit(1);
   });
   myUploadsStatus?.addEventListener("change", () => loadMyUploads(1));
   myUploadsRefreshButton?.addEventListener("click", () => loadMyUploads(currentMyUploadPage));

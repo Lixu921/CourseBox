@@ -151,6 +151,23 @@ def _bool_from_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# get_settings() 每个请求会被多个中间件各调用一次，而默认密码的告警只需要提示一次，
+# 否则开发环境的日志会被同一条警告刷满、把真正的请求日志挤掉。
+_default_password_warned = False
+
+
+def _warn_default_password_once() -> None:
+    global _default_password_warned
+    if _default_password_warned:
+        return
+    _default_password_warned = True
+    logger.warning(
+        "COURSEBOX_ADMIN_PASSWORD 未设置，开发环境暂用内置默认密码；"
+        "请勿在可被访问的环境中使用默认密码。",
+        extra={"event": "insecure_default_password"},
+    )
+
+
 def _admin_password(is_production: bool) -> str:
     """生产环境绝不回退到默认密码，配置缺失或过短一律拒绝启动。"""
 
@@ -161,11 +178,7 @@ def _admin_password(is_production: bool) -> str:
                 "生产环境必须设置 COURSEBOX_ADMIN_PASSWORD"
                 f"（至少 {MIN_ADMIN_PASSWORD_LENGTH} 位），已拒绝启动。"
             )
-        logger.warning(
-            "COURSEBOX_ADMIN_PASSWORD 未设置，开发环境暂用内置默认密码；"
-            "请勿在可被访问的环境中使用默认密码。",
-            extra={"event": "insecure_default_password"},
-        )
+        _warn_default_password_once()
         return DEFAULT_ADMIN_PASSWORD
     if len(configured) < MIN_ADMIN_PASSWORD_LENGTH:
         raise RuntimeError(

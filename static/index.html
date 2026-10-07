@@ -167,6 +167,40 @@
       </ul>
       <nav id="user-pagination" class="pagination" aria-label="用户分页"></nav>
     </section>
+    <section id="audit-panel" class="admin-panel" hidden aria-labelledby="audit-heading">
+      <div class="section-heading">
+        <h2 id="audit-heading">操作记录</h2>
+        <span class="muted">管理员</span>
+      </div>
+      <div class="user-toolbar">
+        <label class="sr-only" for="audit-filter-keyword">按操作人或详情筛选</label>
+        <input id="audit-filter-keyword" type="search" placeholder="按操作人或详情筛选" autocomplete="off">
+        <label class="sr-only" for="audit-filter-action">按动作筛选</label>
+        <select id="audit-filter-action">
+          <option value="">全部动作</option>
+          <option value="create">新建</option>
+          <option value="update">修改</option>
+          <option value="delete">删除</option>
+          <option value="download">下载</option>
+          <option value="preview">预览</option>
+          <option value="login">登录</option>
+          <option value="logout">退出登录</option>
+          <option value="reset_password">重置密码</option>
+        </select>
+        <label class="sr-only" for="audit-filter-entity">按对象筛选</label>
+        <select id="audit-filter-entity">
+          <option value="">全部对象</option>
+          <option value="course">课程</option>
+          <option value="file">资料</option>
+          <option value="user">用户</option>
+        </select>
+        <button id="audit-filter-button" class="text-button" type="button">筛选</button>
+      </div>
+      <ul id="audit-list" class="user-list" aria-live="polite">
+        <li class="state-message">正在加载操作记录...</li>
+      </ul>
+      <nav id="audit-pagination" class="pagination" aria-label="操作记录分页"></nav>
+    </section>
     <section id="my-uploads-panel" class="admin-panel" hidden aria-labelledby="my-uploads-heading">
       <div class="section-heading">
         <h2 id="my-uploads-heading">我的上传</h2>
@@ -192,6 +226,12 @@
         <h2 id="course-heading">全部课程</h2>
         <span id="course-count" class="muted"></span>
       </div>
+      <form id="course-search-form" class="search-bar course-search-bar" role="search">
+        <label class="sr-only" for="course-search-input">搜索课程</label>
+        <input id="course-search-input" type="search" placeholder="搜索课程名、学院或学期" autocomplete="off">
+        <button type="submit">搜索课程</button>
+        <button id="course-search-reset" class="text-button" type="button" hidden>清除</button>
+      </form>
       <div id="course-list" class="course-grid" aria-live="polite">
         <p class="state-message">正在加载课程...</p>
       </div>

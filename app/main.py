@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router
@@ -88,6 +89,7 @@ app.include_router(download_router)
 app.include_router(search_router)
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(audit_router)
 
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")

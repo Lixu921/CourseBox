@@ -4,14 +4,16 @@ from urllib.parse import unquote
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import reset_initialized_databases
 from app.main import app
 from app.ratelimit import reset_rate_limits
 
 
 def create_client() -> TestClient:
     # 限流按客户端 IP 计数，而所有测试都来自同一个 TestClient 主机；
-    # 每个用例开头清空计数，避免测试之间互相把对方顶到 429。
+    # 建表缓存按数据库路径记忆。两者都清空，测试之间才不会互相影响。
     reset_rate_limits()
+    reset_initialized_databases()
     return TestClient(app)
 
 
@@ -95,11 +97,17 @@ def test_pages_are_available():
     assert 'id="user-list"' in homepage.text
     assert 'id="my-uploads-panel"' in homepage.text
     assert 'id="my-uploads-list"' in homepage.text
+    assert 'id="audit-panel"' in homepage.text
+    assert 'id="audit-list"' in homepage.text
+    assert 'id="audit-filter-action"' in homepage.text
+    assert 'id="course-search-form"' in homepage.text
+    assert 'id="course-search-input"' in homepage.text
     assert 'id="auth-hint"' in homepage.text
     assert 'id="auth-hint-login"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
     assert 'id="drop-zone"' in course_page.text
+    assert 'id="upload-quota"' in course_page.text
     assert 'id="upload-results"' in course_page.text
     assert 'id="preview-dialog"' in course_page.text
     assert "multiple" in course_page.text
@@ -1855,6 +1863,201 @@ def test_backup_script_entrypoint_is_importable():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert callable(module.main)
+
+
+def test_audit_log_listing_for_admins(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+
+    # 未登录不能看操作记录。
+    assert client.get("/接口/审计").status_code == 401
+
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "数据结构"}).json()
+    upload = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "绪论"},
+        files={"file": ("intro.pdf", b"a" * 32, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+
+    page = client.get("/接口/审计").json()
+    assert page["total"] >= 3
+    assert page["page"] == 1
+    # 最新的记录排在最前面。
+    ids = [item["id"] for item in page["items"]]
+    assert ids == sorted(ids, reverse=True)
+    # 操作人用户名由 LEFT JOIN 带出来，而不是只给一个 id。
+    assert page["items"][0]["actor_name"] == "admin"
+    assert {"login", "create"} <= {item["action"] for item in page["items"]}
+
+    only_login = client.get("/接口/审计", params={"动作": "login"}).json()
+    assert only_login["total"] >= 1
+    assert {item["action"] for item in only_login["items"]} == {"login"}
+
+    only_course = client.get("/接口/审计", params={"对象": "course"}).json()
+    assert only_course["total"] >= 1
+    assert {item["entity_type"] for item in only_course["items"]} == {"course"}
+
+    matched = client.get("/接口/审计", params={"关键词": "数据结构"}).json()
+    assert matched["total"] >= 1
+
+    # 参数校验与分页。
+    assert client.get("/接口/审计", params={"动作": "bogus"}).status_code == 422
+    assert (
+        client.get(
+            "/接口/审计", params={"起始时间": "2026-01-02", "结束时间": "2026-01-01"}
+        ).status_code
+        == 422
+    )
+    paged = client.get("/接口/审计", params={"page": 1, "page_size": 2}).json()
+    assert len(paged["items"]) == 2
+    assert paged["total_pages"] == (paged["total"] + 1) // 2
+
+    # 非管理员不能看。
+    created = client.post(
+        "/接口/用户",
+        json={"username": "viewer1", "password": "viewer12345", "role": "viewer"},
+    )
+    assert created.status_code == 201, created.text
+    viewer = create_client()
+    login_user(viewer, "viewer1", "viewer12345")
+    assert viewer.get("/接口/审计").status_code == 403
+
+
+def test_course_quota_endpoint(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_MAX_FILE_SIZE", "400")
+    monkeypatch.setenv("COURSEBOX_MAX_COURSE_BYTES", "1000")
+    monkeypatch.setenv("COURSEBOX_MAX_TOTAL_BYTES", "5000")
+
+    from app.db import init_db
+
+    init_db()
+
+    # 未登录不给看，避免把服务器磁盘信息暴露给匿名访客。
+    assert client.get("/接口/课程/1/配额").status_code == 401
+
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "数据结构"}).json()
+
+    quota = client.get(f"/接口/课程/{course['id']}/配额").json()
+    assert quota["max_file_size"] == 400
+    assert quota["course_limit"] == 1000
+    assert quota["course_used"] == 0
+    assert quota["course_remaining"] == 1000
+    assert quota["site_remaining"] == 5000
+    # 四项上限里单文件大小最紧，所以本次允许 400 字节。
+    assert quota["allowed_bytes"] == 400
+    assert "400 字节" in quota["reason"]
+    assert quota["disk_free"] and quota["disk_free"] > 0
+
+    upload = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "绪论"},
+        files={"file": ("intro.pdf", b"a" * 300, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+
+    # 上传后已用与剩余要跟着变。
+    after = client.get(f"/接口/课程/{course['id']}/配额").json()
+    assert after["course_used"] == 300
+    assert after["course_remaining"] == 700
+    assert after["site_used"] == 300
+    assert after["site_remaining"] == 4700
+
+    # 课程总量耗尽时，允许字节数降到 0，并给出对应原因。
+    exhausted = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "补遗"},
+        files={"file": ("extra.pdf", b"b" * 300, "application/octet-stream")},
+    )
+    assert exhausted.status_code == 201, exhausted.text
+    full = client.get(f"/接口/课程/{course['id']}/配额").json()
+    assert full["course_remaining"] == 400
+    assert full["allowed_bytes"] == 400
+
+    assert client.get("/接口/课程/9999/配额").status_code == 404
+
+
+def test_course_list_keyword_search(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    client.post(
+        "/接口/课程",
+        json={"name": "数据结构", "college": "计算机学院", "semester": "2026 秋"},
+    )
+    client.post(
+        "/接口/课程",
+        json={"name": "高等数学", "college": "数学学院", "semester": "2026 秋"},
+    )
+    client.post("/接口/课程", json={"name": "线性代数"})
+
+    assert client.get("/接口/课程").json()["total"] == 3
+
+    # 关键词分别命中课程名、学院、学期。
+    assert client.get("/接口/课程", params={"关键词": "高等"}).json()["total"] == 1
+    assert client.get("/接口/课程", params={"关键词": "计算机"}).json()["total"] == 1
+    assert client.get("/接口/课程", params={"关键词": "2026 秋"}).json()["total"] == 2
+    assert client.get("/接口/课程", params={"关键词": "不存在"}).json()["total"] == 0
+
+    # 通配符要被转义，不能把 % 当成"匹配全部"。
+    assert client.get("/接口/课程", params={"关键词": "%"}).json()["total"] == 0
+    assert client.get("/接口/课程", params={"关键词": "_"}).json()["total"] == 0
+
+    # 关键词与分页同时生效。
+    paged = client.get(
+        "/接口/课程", params={"关键词": "2026 秋", "page": 1, "page_size": 1}
+    ).json()
+    assert len(paged["items"]) == 1
+    assert paged["total"] == 2
+    assert paged["total_pages"] == 2
+
+
+def test_database_schema_is_initialized_once_per_path(tmp_path, monkeypatch):
+    """建表只在进程首次打开该库时跑一次。
+
+    init_db 里全是 DDL 与 PRAGMA journal_mode=WAL，在新建连接上要上百毫秒；
+    如果每个请求都跑一遍，单次请求会被拖慢两个数量级。
+    """
+
+    from app import db as db_module
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "once.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    create_client()
+
+    calls: list[int] = []
+    real_init_db = db_module.init_db
+
+    def counting_init_db(connection=None):
+        calls.append(1)
+        return real_init_db(connection)
+
+    monkeypatch.setattr(db_module, "init_db", counting_init_db)
+
+    client = create_client()
+    for _ in range(3):
+        assert client.get("/接口/课程").status_code == 200
+    assert len(calls) == 1
+
+    # 清掉缓存后会重新初始化一次，用于确认缓存确实是按路径生效的。
+    reset_initialized_databases()
+    assert client.get("/接口/课程").status_code == 200
+    assert len(calls) == 2
 
 
 def test_security_headers_on_pages_and_static_files():
