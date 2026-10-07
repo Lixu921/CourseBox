@@ -1511,6 +1511,110 @@ def test_admin_resets_user_password(tmp_path, monkeypatch):
     ).status_code == 200
 
 
+def test_user_changes_own_password(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    client.post(
+        "/接口/用户",
+        json={"username": "selfserve", "password": "old-password", "role": "uploader"},
+    )
+
+    mine = create_client()
+    login_user(mine, "selfserve", "old-password")
+    assert mine.get("/接口/当前用户").json()["username"] == "selfserve"
+
+    assert mine.post(
+        "/接口/我的密码",
+        json={"current_password": "old-password", "new_password": "brand-new-pass"},
+    ).status_code == 204
+
+    # 旧密码失效、新密码可用。
+    assert mine.post(
+        "/接口/登录", json={"username": "selfserve", "password": "old-password"}
+    ).status_code == 401
+    assert mine.post(
+        "/接口/登录", json={"username": "selfserve", "password": "brand-new-pass"}
+    ).status_code == 200
+
+    # 审计里能看出是本人改的，而不是管理员重置的。
+    records = client.get("/接口/审计", params={"动作": "reset_password"}).json()["items"]
+    assert any("用户自助修改密码" in (item["detail"] or "") for item in records), records
+
+
+def test_change_password_keeps_current_session_drops_others(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    client.post(
+        "/接口/用户",
+        json={"username": "twodevices", "password": "old-password", "role": "viewer"},
+    )
+
+    laptop = create_client()
+    phone = create_client()
+    login_user(laptop, "twodevices", "old-password")
+    login_user(phone, "twodevices", "old-password")
+    assert phone.get("/接口/当前用户").status_code == 200
+
+    assert laptop.post(
+        "/接口/我的密码",
+        json={"current_password": "old-password", "new_password": "another-pass"},
+    ).status_code == 204
+
+    # 改密码的那台设备不该被自己踢下线……
+    assert laptop.get("/接口/当前用户").status_code == 200
+    # ……其它设备上的会话必须失效。
+    assert phone.get("/接口/当前用户").status_code == 401
+
+
+def test_change_password_rejects_wrong_or_invalid_input(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+
+    anonymous = create_client()
+    assert anonymous.post(
+        "/接口/我的密码",
+        json={"current_password": "admin12345", "new_password": "whatever-pass"},
+    ).status_code == 401
+
+    # 当前密码不对。
+    assert client.post(
+        "/接口/我的密码",
+        json={"current_password": "not-the-password", "new_password": "whatever-pass"},
+    ).status_code == 400
+    # 新密码太短、与当前密码相同、字段缺失，都由 schema 拦下。
+    assert client.post(
+        "/接口/我的密码",
+        json={"current_password": "admin12345", "new_password": "short"},
+    ).status_code == 422
+    assert client.post(
+        "/接口/我的密码",
+        json={"current_password": "admin12345", "new_password": "admin12345"},
+    ).status_code == 422
+    assert client.post("/接口/我的密码", json={"new_password": "whatever-pass"}).status_code == 422
+    # 密码没被改坏，原密码仍然能登录。
+    assert create_client().post(
+        "/接口/登录", json={"username": "admin", "password": "admin12345"}
+    ).status_code == 200
+
+
 def test_non_admin_cannot_manage_users(tmp_path, monkeypatch):
     client = create_client()
     monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
@@ -3280,6 +3384,56 @@ def test_frontend_fetch_calls_match_registered_routes():
                 f"{method} {path} —— 后端只允许 {'/'.join(sorted(allowed))}"
             )
     assert not problems, "前端调用了后端不接受的接口：\n" + "\n".join(sorted(set(problems)))
+
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
+def _static_pages() -> dict[str, str]:
+    return {
+        name: (STATIC_DIR / name).read_text(encoding="utf-8")
+        for name in ("index.html", "course.html")
+    }
+
+
+def test_frontend_element_ids_exist_in_some_page():
+    """app.js 里 querySelector("#id") 用到的每个 id，至少要出现在一个页面里。
+
+    回归背景：改密码入口最初只加在 index.html，course.html 漏了；两页共用同一个
+    app.js，少了元素不会报错、只会「点了没反应」，肉眼很难发现。
+    """
+
+    pages = _static_pages()
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    ids = set(re.findall(r'querySelector\("#([A-Za-z0-9_-]+)"\)', source))
+    assert ids, "没从 app.js 解析出任何 id，正则可能已过期"
+
+    missing = sorted(
+        element_id
+        for element_id in ids
+        if not any(f'id="{element_id}"' in html for html in pages.values())
+    )
+    assert not missing, f"app.js 引用了任何页面都没有的 id：{missing}"
+
+
+def test_both_pages_share_the_auth_controls():
+    """登录 / 改密码的控件两页必须都有，否则入口会随页面而消失。"""
+
+    required = (
+        "auth-status",
+        "login-toggle",
+        "password-toggle",
+        "logout-button",
+        "login-panel",
+        "login-form",
+        "login-message",
+        "password-panel",
+        "password-form",
+        "password-message",
+    )
+    for name, html in _static_pages().items():
+        missing = [element_id for element_id in required if f'id="{element_id}"' not in html]
+        assert not missing, f"{name} 缺少登录 / 改密码控件：{missing}"
 
 
 def _make_stale_probe(uploads: Path) -> Path:

@@ -136,6 +136,21 @@ class PasswordReset(BaseModel):
     password: str = Field(..., min_length=8, max_length=200)
 
 
+class PasswordChange(BaseModel):
+    """用户自助改密码：必须带当前密码，新密码沿用管理员重置时的长度下限。"""
+
+    current_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+    @model_validator(mode="after")
+    def new_password_must_differ(self) -> "PasswordChange":
+        # 新密码和当前密码一样时，改了等于没改，却会把其它设备上的会话全部踢掉，
+        # 属于「用户没意识到自己做了什么」的典型，直接拒绝更清楚。
+        if self.new_password == self.current_password:
+            raise ValueError("新密码不能与当前密码相同")
+        return self
+
+
 class FileReview(BaseModel):
     status: Literal["approved", "rejected"]
 

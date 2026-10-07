@@ -19,6 +19,7 @@
       <div class="auth-area">
         <span id="auth-status" class="auth-status">未登录</span>
         <button id="login-toggle" class="text-button" type="button">登录</button>
+        <button id="password-toggle" class="text-button" type="button" hidden>修改密码</button>
         <button id="logout-button" class="text-button" type="button" hidden>退出</button>
       </div>
     </div>
@@ -39,6 +40,28 @@
         </div>
         <button class="primary-button compact-button" type="submit">登录</button>
         <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <section id="password-panel" class="auth-panel" hidden aria-labelledby="password-heading">
+      <div class="section-heading">
+        <h2 id="password-heading">修改密码</h2>
+        <span class="muted">改完密码后，其它设备上的登录会被退出</span>
+      </div>
+      <form id="password-form" class="inline-form">
+        <div class="form-field">
+          <label for="password-current">当前密码</label>
+          <input id="password-current" name="current_password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="form-field">
+          <label for="password-new">新密码</label>
+          <input id="password-new" name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="form-field">
+          <label for="password-confirm">确认新密码</label>
+          <input id="password-confirm" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <button class="primary-button compact-button" type="submit">保存</button>
+        <p id="password-message" class="form-message" role="status" aria-live="polite"></p>
       </form>
     </section>
     <a class="back-link" href="/">← 返回课程列表</a>

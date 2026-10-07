@@ -6,6 +6,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from app.auth import (
     SESSION_COOKIE,
     SESSION_TTL,
+    hash_password,
     new_session_token,
     session_expiry,
     session_hard_deadline,
@@ -21,7 +22,7 @@ from app.db import (
     record_audit,
     register_login_failure,
 )
-from app.schemas import LoginRequest, User
+from app.schemas import LoginRequest, PasswordChange, User
 
 router = APIRouter(tags=["账户"])
 
@@ -207,6 +208,57 @@ def login(
 )
 def get_me(user: sqlite3.Row = Depends(current_user)) -> User:
     return public_user(user)
+
+
+@router.post(
+    "/api/me/password",
+    include_in_schema=False,
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@router.post(
+    "/接口/我的密码",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="修改自己的密码",
+    operation_id="修改自己的密码",
+)
+def change_my_password(
+    payload: PasswordChange,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    user: sqlite3.Row = Depends(current_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    row = db.execute(
+        "SELECT password_hash FROM users WHERE id = ?", (user["id"],)
+    ).fetchone()
+    # 已登录不等于本人：别人拿到一个没锁屏的浏览器同样能点这个接口，
+    # 所以必须再验一次当前密码。
+    if row is None or not verify_password(
+        payload.current_password, row["password_hash"]
+    ):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password(payload.new_password), user["id"]),
+    )
+    # 改完密码要把别处已经登录的会话全部作废（这是改密码的意义所在），
+    # 但当前这一条保留，否则用户刚改完就被自己踢下线。
+    if session_cookie:
+        db.execute(
+            "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
+            (user["id"], session_token_hash(session_cookie)),
+        )
+    else:
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    record_audit(
+        db,
+        user["id"],
+        "reset_password",
+        "user",
+        user["id"],
+        "用户自助修改密码",
+    )
+    db.commit()
 
 
 @router.post(

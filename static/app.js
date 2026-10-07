@@ -36,6 +36,10 @@ const previewDownload = document.querySelector("#preview-download");
 const previewClose = document.querySelector("#preview-close");
 const authStatus = document.querySelector("#auth-status");
 const loginToggle = document.querySelector("#login-toggle");
+const passwordToggle = document.querySelector("#password-toggle");
+const passwordPanel = document.querySelector("#password-panel");
+const passwordForm = document.querySelector("#password-form");
+const passwordMessage = document.querySelector("#password-message");
 const logoutButton = document.querySelector("#logout-button");
 const loginPanel = document.querySelector("#login-panel");
 const authHint = document.querySelector("#auth-hint");
@@ -222,9 +226,12 @@ function updateAuthUI() {
     ? `${currentUser.username} · ${ROLE_LABELS[currentUser.role] || currentUser.role}`
     : "未登录";
   loginToggle.hidden = Boolean(currentUser);
+  if (passwordToggle) passwordToggle.hidden = !currentUser;
   logoutButton.hidden = !currentUser;
   if (authHint) authHint.hidden = Boolean(currentUser);
   if (loginPanel && currentUser) loginPanel.hidden = true;
+  // 退出登录后必须收起改密码面板，否则下一个访客能看到空表单。
+  if (passwordPanel && !currentUser) passwordPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
   if (auditPanel) auditPanel.hidden = currentUser?.role !== "admin";
@@ -330,6 +337,56 @@ async function logout() {
     updateAuthUI();
     if (currentCourseId) await loadCourseFiles(currentCourseId, currentFilePage);
     logoutButton.disabled = false;
+  }
+}
+
+function togglePasswordPanel() {
+  if (!passwordPanel) return;
+  passwordPanel.hidden = !passwordPanel.hidden;
+  if (passwordPanel.hidden) return;
+  // 每次打开都清空上一次的输入与提示，别把密码留在 DOM 里。
+  passwordForm?.reset();
+  setPasswordMessage("");
+  document.querySelector("#password-current")?.focus();
+}
+
+function setPasswordMessage(message, state = "info") {
+  if (!passwordMessage) return;
+  passwordMessage.textContent = message;
+  const classes = {
+    error: "form-message error-message",
+    success: "form-message success-message",
+  };
+  passwordMessage.className = classes[state] || "form-message";
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(passwordForm));
+  // 两次输入不一致在本地就能发现，不必浪费一次请求（也不会把密码发出去两次）。
+  if (data.new_password !== data.confirm_password) {
+    setPasswordMessage("两次输入的新密码不一致。", "error");
+    return;
+  }
+  const submitButton = passwordForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  setPasswordMessage("正在保存...");
+  try {
+    const response = await fetch("/api/me/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current_password: data.current_password,
+        new_password: data.new_password,
+      }),
+    });
+    if (!response.ok) throw new Error(await readError(response, "修改密码失败。"));
+    passwordForm.reset();
+    setPasswordMessage("密码已更新，其它设备上的登录已被退出。", "success");
+  } catch (error) {
+    setPasswordMessage(error.message || "修改密码失败。", "error");
+  } finally {
+    submitButton.disabled = false;
   }
 }
 
@@ -1807,6 +1864,8 @@ function initAuth() {
   });
   logoutButton?.addEventListener("click", logout);
   loginForm?.addEventListener("submit", submitLogin);
+  passwordToggle?.addEventListener("click", togglePasswordPanel);
+  passwordForm?.addEventListener("submit", submitPasswordChange);
   previewClose?.addEventListener("click", closePreview);
   previewDialog?.querySelector("[data-preview-close]")?.addEventListener("click", closePreview);
   document.addEventListener("keydown", (event) => {
