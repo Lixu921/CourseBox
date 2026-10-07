@@ -344,10 +344,16 @@ py -m pytest -q
 ### 第五轮收尾：一次前后端接口错位修复
 
 第五轮收完后又补了一次前端联调测试（用 jsdom 跑真实 `static/app.js` + 真实 HTML，32 项断言），
-当场抓到一个线上会 405 的 bug：
+当场抓到一个线上点按钮就报错的 bug：
 
 - **批量审核前端还在发 PATCH。** 后端因为路由注册顺序的原因把批量审核改成了 POST（见上文第 5 项），
-  但 `static/app.js` 忘了跟着改，点「批量通过 / 批量拒绝」会拿到 405 Method Not Allowed。已改成 POST。
+  但 `static/app.js` 忘了跟着改，点「批量通过 / 批量拒绝」会失败。已改成 POST。
+
+**症状修正（起真实服务实测后更正）**：这里原先写的是「会拿到 405 Method Not Allowed」，**不对**。
+起 uvicorn 实测确认，旧前端那句 `PATCH /api/files/batch/review` 会被
+`PATCH /api/files/{资料编号}/review` 抢先匹配，把 `"batch"` 当编号解析 → **422 Unprocessable Entity**。
+中文路径 `PATCH /接口/资料/批量审核` 同理（被 `PATCH /接口/资料/{资料编号}` 吃掉）也是 **422**。
+也就是说用户看到的是一句莫名其妙的参数校验错误，而不是干净的 405。
 - **顺手加了一条永久防线。** `tests/test_api.py::test_frontend_fetch_calls_match_registered_routes`
   会把 `app.js` 里每个 `fetch` 的「路径 + 方法」抽出来，跟 `app.main` 的真实路由表逐一比对
   （模板里的 `${...}` 与路由的 `{id}` 归一成同一形状）。前后端接缝以后不会再悄悄跑偏。
@@ -366,5 +372,20 @@ py -m pytest -q
 那个 jsdom 联调脚本没有留在仓库里：它需要 Node + jsdom，跟本项目「不引入前端构建链」的约定冲突。
 前端与后端的接缝由上面那条 pytest 用例长期看住，不需要 Node。
 
-最终状态：`py -m ruff check .` 全绿，`py -m pytest` **99 passed**（96 → 99）。
+最后又**起了一次真实 uvicorn** 做端到端冒烟（17 项断言，全通过），确认的不只是修复本身，
+还有第五轮的几处关键行为：
+
+- 登录 → 建课 → 上传两份资料，`POST /接口/资料/批量审核` 与前端真正调用的
+  `POST /api/files/batch/review` 都返回 200；两种 PATCH 写法都是 422。
+- 多选打包：`?资料编号=X` 打出来只有 1 份；不传编号则整门课 2 份。
+- 浏览器访问不存在路径拿到中文 HTML 错误页，接口调用方仍拿 JSON。
+- `/资源/脚本.js?v=xxx` 回 `public, max-age=31536000, immutable`，不带版本号回 `no-cache`。
+- `favicon.ico` 回 204；`DELETE /接口/资料/{id}` 回 204 并真的进回收站，`/接口/回收站/{id}/恢复` 能恢复。
+
+**这次冒烟还纠正了一个诊断错误**（见上面的「症状修正」）：最初我是靠静态分析推断「会 405」，
+起真实服务才发现是 422。教训：**接口行为的结论要跑一次真实服务再说**，TestClient 和静态推断
+都容易漏掉路由抢占这类细节。
+
+最终状态：`py -m ruff check .` 全绿，`py -m pytest` **99 passed**（96 → 99）；
+真实服务端到端冒烟 **17/17 通过**。
 
