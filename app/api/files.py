@@ -208,7 +208,38 @@ def file_response(row: sqlite3.Row) -> dict:
     return result
 
 
-def search_response(row: sqlite3.Row) -> dict:
+# 检索能命中的字段，以及给用户看的中文标签。顺序即展示顺序。
+SEARCHABLE_FIELDS = (
+    ("title", "标题"),
+    ("original_name", "文件名"),
+    ("course_name", "课程名"),
+)
+
+
+def matched_field_labels(row: sqlite3.Row, terms: list[str]) -> list[str]:
+    """判断关键词落在哪几个字段上，供结果卡片显示「命中：…」。
+
+    这三个字段在卡片上本来就完整显示、也已经高亮，所以这里只回答「为什么命中」，
+    不再另外截取片段——那样只会把用户已经看到的文字再抄一遍。
+    """
+
+    if not terms:
+        return []
+    labels: list[str] = []
+    for key, label in SEARCHABLE_FIELDS:
+        value = str(row[key] or "").lower()
+        if any(term in value for term in terms):
+            labels.append(label)
+    return labels
+
+
+def search_terms(keyword: str) -> list[str]:
+    """把关键词拆成小写词条，与前端 highlight() 的拆词方式保持一致。"""
+
+    return [term.lower() for term in keyword.split() if term.strip()]
+
+
+def search_response(row: sqlite3.Row, terms: list[str]) -> dict:
     result = file_response(row)
     result["course"] = {
         "id": row["course_id"],
@@ -216,6 +247,7 @@ def search_response(row: sqlite3.Row) -> dict:
         "college": row["college"],
         "semester": row["semester"],
     }
+    result["matched_fields"] = matched_field_labels(row, terms)
     return result
 
 
@@ -867,7 +899,8 @@ def list_my_files(
         (*params, page_size, (page - 1) * page_size),
     ).fetchall()
     return FilePage(
-        **page_response([search_response(row) for row in rows], total, page, page_size)
+        # 「我的资料」不按关键词检索，所以没有「命中」提示。
+        **page_response([search_response(row, []) for row in rows], total, page, page_size)
     )
 
 
@@ -941,8 +974,11 @@ def search_files(
             # 运行环境没有 FTS5 或索引损坏时退回纯 LIKE 搜索。
             if not use_fts:
                 raise
+    terms = search_terms(keyword)
     return FilePage(
-        **page_response([search_response(row) for row in rows], total, page, page_size)
+        **page_response(
+            [search_response(row, terms) for row in rows], total, page, page_size
+        )
     )
 
 

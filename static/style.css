@@ -275,6 +275,19 @@ mark { background: #fff3c4; color: inherit; border-radius: 4px; padding: 0 2px; 
 .course-card h3 { font-size: 19px; line-height: 1.35; margin: 0 0 10px; font-weight: 700; }
 .course-card h3 a { text-decoration: none; }
 .course-meta { color: var(--muted); font-size: 13.5px; margin: 4px 0 0; }
+/* 「命中：…」提示，课程卡片与搜索结果卡片共用：说明这条结果为什么被搜出来。 */
+.match-hint {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-dark);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 12px 0 0;
+  padding: 3px 10px;
+}
+.search-result-card .match-hint { margin-bottom: 16px; }
 
 /* ---------- 搜索结果 ---------- */
 .search-result-card {

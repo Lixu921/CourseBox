@@ -1099,6 +1099,55 @@ def test_search_matches_course_name(tmp_path, monkeypatch):
     assert response.json()["items"][0]["course"]["name"] == "高等数学"
 
 
+def test_search_reports_matched_fields(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # 标题「数据结构期中复习」和文件名「数据结构期中.pdf」都含「期中」，课程名不含。
+    hit = client.get("/接口/搜索", params={"q": "期中"}).json()["items"][0]
+    assert hit["matched_fields"] == ["标题", "文件名"]
+
+    # 三个字段都含「数据结构」，顺序按后端 SEARCHABLE_FIELDS 固定。
+    hit = client.get("/接口/搜索", params={"q": "数据结构"}).json()["items"][0]
+    assert hit["matched_fields"] == ["标题", "文件名", "课程名"]
+
+
+def test_search_matched_fields_can_be_course_name_only(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    course = client.post("/接口/课程", json={"name": "高等数学"}).json()
+    client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "第一章"},
+        files={"file": ("chapter1.pdf", b"x", "application/pdf")},
+    )
+
+    # 标题和文件名都不含关键词，命中的只有课程名——这正是「命中：课程名」要解释的场景。
+    hit = client.get("/接口/搜索", params={"q": "高等数学"}).json()["items"][0]
+    assert hit["matched_fields"] == ["课程名"]
+
+
+def test_search_without_keyword_has_no_matched_fields(tmp_path, monkeypatch):
+    client, _ = searchable_client(tmp_path, monkeypatch)
+
+    # 只按类型筛选、没有关键词时不该凭空造出「命中」提示。
+    item = client.get("/接口/搜索", params={"类型": "pdf"}).json()["items"][0]
+    assert item["matched_fields"] == []
+
+
+def test_matched_field_labels_and_search_terms_units():
+    from app.api.files import matched_field_labels, search_terms
+
+    row = {"title": "数据结构", "original_name": "a.pdf", "course_name": "数据结构"}
+    assert matched_field_labels(row, []) == []
+    assert matched_field_labels(row, ["不存在的词"]) == []
+    assert matched_field_labels(row, ["数据结构"]) == ["标题", "课程名"]
+
+    # 拆词规则要和前端 highlight() 一致：按空白切分、去空、转小写。
+    assert search_terms("  数据  结构 ") == ["数据", "结构"]
+    assert search_terms("Data Structures") == ["data", "structures"]
+    assert search_terms("   ") == []
+
+
 def test_search_query_plan_uses_fts_index(tmp_path, monkeypatch):
     import sqlite3
 
@@ -1541,6 +1590,8 @@ def test_my_uploads_listing_and_withdraw(tmp_path, monkeypatch):
     assert first["course"]["name"] == "我的上传课程"
     assert first["course_id"] == course["id"]
     assert first["uploaded_by"] == worker.get("/接口/当前用户").json()["id"]
+    # 「我的资料」不按关键词检索，所以永远没有「命中」提示。
+    assert first["matched_fields"] == []
 
     # 状态筛选。
     only_pending = worker.get("/接口/我的资料", params={"状态": "pending"}).json()

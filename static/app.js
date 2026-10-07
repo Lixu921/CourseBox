@@ -325,32 +325,60 @@ async function logout() {
   }
 }
 
-function courseCard(course) {
+function matchesQuery(value, query) {
+  const terms = (query || "")
+    .split(/\s+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  if (!terms.length) return false;
+  const text = String(value ?? "").toLowerCase();
+  return terms.some((term) => text.includes(term));
+}
+
+// 「命中：…」提示。回答的是「这条结果为什么出现」——被检索的字段在卡片上都已经
+// 完整显示，所以这里只报字段名，不再重复抄一遍内容。
+function matchHint(labels) {
+  if (!labels.length) return null;
+  const hint = document.createElement("p");
+  hint.className = "match-hint";
+  hint.textContent = `命中：${labels.join("、")}`;
+  return hint;
+}
+
+function courseCard(course, query) {
   const card = document.createElement("a");
   card.className = "course-card";
   card.href = courseUrl(course);
   const title = document.createElement("h3");
-  title.textContent = course.name;
+  title.append(highlight(course.name, query));
   card.append(title);
   if (course.college) {
     const college = document.createElement("p");
     college.className = "course-meta";
-    college.textContent = course.college;
+    college.append(highlight(course.college, query));
     card.append(college);
   }
   if (course.semester) {
     const semester = document.createElement("p");
     semester.className = "course-meta";
-    semester.textContent = course.semester;
+    semester.append(highlight(course.semester, query));
     card.append(semester);
   }
+  // 课程是按 课程名 / 学院 / 学期 三个字段 OR 匹配的，所以必须说清是哪个命中的：
+  // 否则搜「计算机」时用户只看到课程名，完全不知道它为什么被搜出来。
+  const labels = [];
+  if (matchesQuery(course.name, query)) labels.push("课程名");
+  if (matchesQuery(course.college, query)) labels.push("学院");
+  if (matchesQuery(course.semester, query)) labels.push("学期");
+  const hint = matchHint(labels);
+  if (hint) card.append(hint);
   return card;
 }
 
-function courseGrid(courses) {
+function courseGrid(courses, query = "") {
   const grid = document.createElement("div");
   grid.className = "course-grid";
-  courses.forEach((course) => grid.append(courseCard(course)));
+  courses.forEach((course) => grid.append(courseCard(course, query)));
   return grid;
 }
 
@@ -402,7 +430,11 @@ function searchResultCard(file, query) {
   download.textContent = "下载";
   download.setAttribute("download", "");
   actions.append(courseLink, download);
-  card.append(title, metadata, course, actions);
+  // matched_fields 由后端算好（标题 / 文件名 / 课程名），这里只负责展示。
+  const hint = matchHint(file.matched_fields || []);
+  card.append(title, metadata, course);
+  if (hint) card.append(hint);
+  card.append(actions);
   return card;
 }
 
@@ -428,7 +460,7 @@ function renderCombinedSearch(coursesData, filesData, page) {
 
   if (coursesData) {
     courseList.append(groupHeading(`课程（${coursesData.total} 门）`));
-    if (courses.length) courseList.append(courseGrid(courses));
+    if (courses.length) courseList.append(courseGrid(courses, query));
     else courseList.append(stateLine("没有匹配的课程"));
   }
 
