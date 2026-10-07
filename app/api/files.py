@@ -226,12 +226,21 @@ def build_search_filter(
     return " AND ".join(clauses), params
 
 
-SortOption = Literal["newest", "oldest", "name", "size"]
+SortOption = Literal[
+    "newest", "oldest", "name", "size", "最新", "最早", "标题", "大小"
+]
 SORT_OPTIONS: dict[str, str] = {
     "newest": "f.upload_time DESC, f.id DESC",
     "oldest": "f.upload_time ASC, f.id ASC",
     "name": "f.title COLLATE NOCASE ASC, f.id DESC",
     "size": "f.size DESC, f.id DESC",
+}
+# 中文别名归一化到白名单键；排序片段始终取自 SORT_OPTIONS，不拼接用户输入。
+SORT_ALIASES: dict[str, str] = {
+    "最新": "newest",
+    "最早": "oldest",
+    "标题": "name",
+    "大小": "size",
 }
 
 
@@ -691,7 +700,10 @@ def search_files(
     类型: str | None = Query(None, max_length=20, description="按扩展名筛选，如 pdf"),
     起始时间: str | None = Query(None, description="上传时间不早于该日期（YYYY-MM-DD）"),
     结束时间: str | None = Query(None, description="上传时间不晚于该日期（YYYY-MM-DD）"),
-    排序: SortOption = Query("newest", description="排序方式"),
+    排序: SortOption = Query(
+        "newest",
+        description="排序方式：newest/oldest/name/size，也接受中文 最新/最早/标题/大小",
+    ),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: sqlite3.Connection = Depends(get_db),
@@ -708,7 +720,7 @@ def search_files(
     if not keyword and not extra_clauses:
         return FilePage(**page_response([], 0, page, page_size))
 
-    order = SORT_OPTIONS[排序]
+    order = SORT_OPTIONS[SORT_ALIASES.get(排序, 排序)]
     total = 0
     rows: list[sqlite3.Row] = []
     for use_fts in ((True, False) if keyword else (False,)):

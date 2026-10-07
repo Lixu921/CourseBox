@@ -91,6 +91,8 @@ def test_pages_are_available():
     assert 'id="user-list"' in homepage.text
     assert 'id="my-uploads-panel"' in homepage.text
     assert 'id="my-uploads-list"' in homepage.text
+    assert 'id="auth-hint"' in homepage.text
+    assert 'id="auth-hint-login"' in homepage.text
     assert 'id="upload-progress"' in course_page.text
     assert 'id="file-selection"' in course_page.text
     assert 'id="drop-zone"' in course_page.text
@@ -1615,6 +1617,59 @@ def test_search_filters_and_sorting(tmp_path, monkeypatch):
         "/接口/搜索", params={"起始时间": "2020-01-01", "结束时间": "2019-01-01"}
     ).status_code == 422
     assert client.get("/接口/搜索", params={"起始时间": "not-a-date"}).status_code == 422
+
+
+def test_search_sort_accepts_chinese_aliases(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "数据结构"}).json()
+
+    def upload(title, filename, payload):
+        response = client.post(
+            f"/接口/课程/{course['id']}/资料",
+            data={"title": title},
+            files={"file": (filename, payload, "application/octet-stream")},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    small = upload("甲", "a.pdf", b"a" * 10)
+    large = upload("乙", "b.pdf", b"b" * 300)
+
+    # 用起始时间兜底，保证没有关键词时也能列出全部资料。
+    base = {"起始时间": "2000-01-01"}
+
+    def items(sort_value):
+        response = client.get("/接口/搜索", params={**base, "排序": sort_value})
+        assert response.status_code == 200, response.text
+        return response.json()["items"]
+
+    # 中文别名与英文枚举结果一致。
+    assert [item["id"] for item in items("大小")] == [
+        item["id"] for item in items("size")
+    ]
+    assert [item["size"] for item in items("大小")] == [300, 10]
+
+    assert [item["id"] for item in items("最早")] == [
+        item["id"] for item in items("oldest")
+    ]
+    assert [item["id"] for item in items("最早")] == [small["id"], large["id"]]
+
+    assert [item["id"] for item in items("最新")] == [
+        item["id"] for item in items("newest")
+    ]
+    assert [item["id"] for item in items("最新")] == [large["id"], small["id"]]
+
+    assert [item["title"] for item in items("标题")] == sorted(["甲", "乙"])
+
+    # 白名单之外的值依然拒绝。
+    assert client.get("/接口/搜索", params={"排序": "最大"}).status_code == 422
 
 
 def test_file_preview_endpoint(tmp_path, monkeypatch):

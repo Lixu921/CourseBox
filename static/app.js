@@ -30,6 +30,8 @@ const authStatus = document.querySelector("#auth-status");
 const loginToggle = document.querySelector("#login-toggle");
 const logoutButton = document.querySelector("#logout-button");
 const loginPanel = document.querySelector("#login-panel");
+const authHint = document.querySelector("#auth-hint");
+const authHintLogin = document.querySelector("#auth-hint-login");
 const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
 const adminCoursePanel = document.querySelector("#admin-course-panel");
@@ -158,6 +160,7 @@ function updateAuthUI() {
     : "未登录";
   loginToggle.hidden = Boolean(currentUser);
   logoutButton.hidden = !currentUser;
+  if (authHint) authHint.hidden = Boolean(currentUser);
   if (loginPanel && currentUser) loginPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
@@ -1173,6 +1176,9 @@ function readError(response, fallback) {
 
 function initAuth() {
   loginToggle?.addEventListener("click", toggleLoginPanel);
+  authHintLogin?.addEventListener("click", () => {
+    if (loginPanel?.hidden) toggleLoginPanel();
+  });
   logoutButton?.addEventListener("click", logout);
   loginForm?.addEventListener("submit", submitLogin);
   previewClose?.addEventListener("click", closePreview);
