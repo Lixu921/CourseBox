@@ -234,6 +234,16 @@
         <input id="trash-filter-keyword" type="search" placeholder="按标题、文件名、课程或删除人筛选" autocomplete="off">
         <button id="trash-filter-button" class="text-button" type="button">筛选</button>
       </div>
+      <div id="trash-batch-toolbar" class="file-toolbar">
+        <label class="checkbox-field">
+          <input id="trash-select-all" type="checkbox">
+          <span>全选本页</span>
+        </label>
+        <span id="trash-selection-count" class="muted"></span>
+        <button id="trash-batch-restore" class="text-button" type="button" disabled>恢复选中</button>
+        <button id="trash-batch-purge" class="text-button danger-button" type="button" disabled>彻底删除选中</button>
+      </div>
+      <p id="trash-batch-message" class="form-message" aria-live="polite"></p>
       <ul id="trash-list" class="user-list" aria-live="polite">
         <li class="state-message">正在加载回收站...</li>
       </ul>

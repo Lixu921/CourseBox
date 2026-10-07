@@ -2259,6 +2259,122 @@ def test_trash_purge_deletes_file_from_disk(tmp_path, monkeypatch):
     assert client.delete(f"/接口/回收站/{uploaded['id']}").status_code == 404
 
 
+def trash_client(tmp_path, monkeypatch, count=3):
+    """建库、建课、上传 count 份资料并全部移入回收站，返回 (client, course, uploads, ids)。"""
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    uploads = tmp_path / "uploads"
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(uploads))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "批量回收站课程"}).json()
+    ids = []
+    for index in range(count):
+        uploaded = client.post(
+            f"/接口/课程/{course['id']}/资料",
+            data={"title": f"待处理资料 {index}"},
+            files={"file": (f"batch-{index}.txt", f"batch-{index}".encode(), "text/plain")},
+        ).json()
+        assert client.delete(f"/接口/资料/{uploaded['id']}").status_code == 204
+        ids.append(uploaded["id"])
+    assert client.get("/接口/回收站").json()["total"] == count
+    return client, course, uploads, ids
+
+
+def test_trash_batch_restore(tmp_path, monkeypatch):
+    client, course, uploads, ids = trash_client(tmp_path, monkeypatch)
+
+    response = client.post("/接口/回收站/批量恢复", json={"ids": ids})
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (3, 0)
+    assert all(item["ok"] for item in body["items"])
+
+    assert client.get("/接口/回收站").json()["total"] == 0
+    assert client.get(f"/接口/课程/{course['id']}/资料").json()["total"] == 3
+    # 恢复后磁盘文件仍在原处。
+    assert len(list(uploads.iterdir())) == 3
+
+
+def test_trash_batch_purge_removes_files_from_disk(tmp_path, monkeypatch):
+    client, course, uploads, ids = trash_client(tmp_path, monkeypatch)
+
+    response = client.post("/接口/回收站/批量彻底删除", json={"ids": ids})
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (3, 0)
+
+    assert client.get("/接口/回收站").json()["total"] == 0
+    assert list(uploads.iterdir()) == []
+    # 彻底删掉之后连恢复都不行了。
+    assert client.post(f"/接口/回收站/{ids[0]}/恢复").status_code == 404
+
+
+def test_trash_batch_reports_per_item_failures(tmp_path, monkeypatch):
+    client, _, _, ids = trash_client(tmp_path, monkeypatch)
+
+    # 一个不存在、一个已恢复过的编号混进来，不该拖垮其余几条。
+    missing = max(ids) + 999
+    response = client.post(
+        "/接口/回收站/批量恢复", json={"ids": [ids[0], missing, ids[0]]}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # ids[0] 被去重成一条，所以总共只有 2 条结果。
+    assert len(body["items"]) == 2
+    assert body["succeeded"] == 1
+    assert body["failed"] == 1
+    by_id = {item["id"]: item for item in body["items"]}
+    assert by_id[ids[0]]["ok"] is True
+    assert by_id[missing]["ok"] is False
+    assert "回收站里没有这条资料" in by_id[missing]["message"]
+
+    # 成功的恢复了、失败的没影响其他人。
+    assert client.get("/接口/回收站").json()["total"] == 2
+
+
+def test_trash_batch_requires_admin_and_valid_body(tmp_path, monkeypatch):
+    client, _, _, ids = trash_client(tmp_path, monkeypatch)
+
+    assert client.post(
+        "/接口/用户",
+        json={"username": "batch-uploader", "password": "uploader-pass", "role": "uploader"},
+    ).status_code == 201
+    anonymous = create_client()
+    worker = create_client()
+    login_user(worker, "batch-uploader", "uploader-pass")
+
+    for endpoint in ("/接口/回收站/批量恢复", "/接口/回收站/批量彻底删除"):
+        assert anonymous.post(endpoint, json={"ids": ids}).status_code == 401
+        assert worker.post(endpoint, json={"ids": ids}).status_code == 403
+
+    # 空数组与超过上限的数组都由 schema 拦下来，不会打到业务逻辑。
+    assert client.post("/接口/回收站/批量恢复", json={"ids": []}).status_code == 422
+    too_many = list(range(1, 300))
+    assert (
+        client.post("/接口/回收站/批量彻底删除", json={"ids": too_many}).status_code == 422
+    )
+
+
+def test_trash_batch_routes_are_not_shadowed_by_file_id(tmp_path, monkeypatch):
+    """回归：/api/trash/batch/restore 与 /api/trash/{file_id}/restore 段数相同。
+
+    先注册的参数路由会把「batch」当成编号解析，直接 422。这里锁住注册顺序。
+    """
+
+    client, _, _, ids = trash_client(tmp_path, monkeypatch)
+
+    response = client.post("/api/trash/batch/restore", json={"ids": ids[:1]})
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == 1
+    # 参数路由本身仍然可用。
+    assert client.post(f"/api/trash/{ids[1]}/restore").status_code == 200
+
+
 def test_trash_retention_purges_expired_files(tmp_path, monkeypatch):
     import sqlite3
 

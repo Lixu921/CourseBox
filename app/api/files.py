@@ -35,6 +35,7 @@ from app.db import (
     stage_stored_files,
 )
 from app.schemas import (
+    BatchIds,
     BatchItemResult,
     BatchResult,
     CourseQuota,
@@ -1149,21 +1150,11 @@ def list_trash(
     )
 
 
-@trash_router.post(
-    "/api/trash/{file_id}/restore",
-    include_in_schema=False,
-)
-@trash_router.post(
-    "/接口/回收站/{file_id}/恢复",
-    response_model=dict,
-    summary="恢复回收站资料",
-    operation_id="恢复回收站资料",
-)
-def restore_trashed_file(
-    file_id: int,
-    user: sqlite3.Row = Depends(require_roles("admin")),
-    db: sqlite3.Connection = Depends(get_db),
-) -> dict:
+def apply_trash_restore(
+    file_id: int, user: sqlite3.Row, db: sqlite3.Connection
+) -> None:
+    """把一条回收站资料恢复回来。单条与批量共用，保证两条路径行为一致。"""
+
     row = db.execute(
         "SELECT course_id, original_name FROM files "
         "WHERE id = ? AND deleted_at IS NOT NULL",
@@ -1193,6 +1184,120 @@ def restore_trashed_file(
             status_code=409,
             detail="该课程已存在内容相同的资料，无法恢复",
         ) from error
+
+
+def apply_trash_purge(file_id: int, user: sqlite3.Row, db: sqlite3.Connection) -> None:
+    """把一条回收站资料连同磁盘文件一起删掉。单条与批量共用。"""
+
+    row = db.execute(
+        "SELECT filename, original_name FROM files "
+        "WHERE id = ? AND deleted_at IS NOT NULL",
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="回收站里没有这条资料")
+    # 与删除课程走同一套暂存机制：先把文件改名移开，数据库删除提交成功后才真正
+    # unlink；中途失败会回滚并把文件改回来。
+    staged = stage_stored_files([row], db)
+    try:
+        db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        record_audit(
+            db,
+            user["id"],
+            "purge",
+            "file",
+            file_id,
+            f"彻底删除：{row['original_name']}",
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        restore_staged_files(staged, db)
+        raise
+    discard_staged_files(staged, db)
+
+
+# 批量路由必须写在 {file_id} 参数路由前面：/api/trash/batch/restore 与
+# /api/trash/{file_id}/restore 段数相同，先注册的那个才会被匹配到，
+# 否则「batch」会被当成编号解析、直接 422。
+@trash_router.post(
+    "/api/trash/batch/restore",
+    include_in_schema=False,
+)
+@trash_router.post(
+    "/接口/回收站/批量恢复",
+    response_model=BatchResult,
+    summary="批量恢复回收站资料",
+    operation_id="批量恢复回收站资料",
+)
+def batch_restore_trashed_files(
+    payload: BatchIds,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> BatchResult:
+    results: list[BatchItemResult] = []
+    # dict.fromkeys 去重同时保持传入顺序，避免同一个编号被恢复两遍。
+    for file_id in dict.fromkeys(payload.ids):
+        try:
+            apply_trash_restore(file_id, user, db)
+        except HTTPException as error:
+            # 逐条独立成败：某一份恢复不了（比如已被别处删掉）不该拖垮整批。
+            db.rollback()
+            results.append(
+                BatchItemResult(id=file_id, ok=False, message=str(error.detail))
+            )
+        else:
+            results.append(BatchItemResult(id=file_id, ok=True, message="已恢复"))
+    return BatchResult.from_items(results)
+
+
+@trash_router.post(
+    "/api/trash/batch/purge",
+    include_in_schema=False,
+)
+# 彻底删除也走 POST 而不是 DELETE：与批量恢复保持同一套「编号数组 + 逐条回报」
+# 的调用约定，也避免 DELETE 带请求体在某些代理上被丢掉。
+@trash_router.post(
+    "/接口/回收站/批量彻底删除",
+    response_model=BatchResult,
+    summary="批量彻底删除回收站资料",
+    operation_id="批量彻底删除回收站资料",
+)
+def batch_purge_trashed_files(
+    payload: BatchIds,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> BatchResult:
+    results: list[BatchItemResult] = []
+    for file_id in dict.fromkeys(payload.ids):
+        try:
+            apply_trash_purge(file_id, user, db)
+        except HTTPException as error:
+            db.rollback()
+            results.append(
+                BatchItemResult(id=file_id, ok=False, message=str(error.detail))
+            )
+        else:
+            results.append(BatchItemResult(id=file_id, ok=True, message="已彻底删除"))
+    return BatchResult.from_items(results)
+
+
+@trash_router.post(
+    "/api/trash/{file_id}/restore",
+    include_in_schema=False,
+)
+@trash_router.post(
+    "/接口/回收站/{file_id}/恢复",
+    response_model=dict,
+    summary="恢复回收站资料",
+    operation_id="恢复回收站资料",
+)
+def restore_trashed_file(
+    file_id: int,
+    user: sqlite3.Row = Depends(require_roles("admin")),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict:
+    apply_trash_restore(file_id, user, db)
     restored = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
@@ -1220,29 +1325,4 @@ def purge_trashed_file(
     user: sqlite3.Row = Depends(require_roles("admin")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> None:
-    row = db.execute(
-        "SELECT filename, original_name FROM files "
-        "WHERE id = ? AND deleted_at IS NOT NULL",
-        (file_id,),
-    ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="回收站里没有这条资料")
-    # 与删除课程走同一套暂存机制：先把文件改名移开，数据库删除提交成功后才真正
-    # unlink；中途失败会回滚并把文件改回来。
-    staged = stage_stored_files([row], db)
-    try:
-        db.execute("DELETE FROM files WHERE id = ?", (file_id,))
-        record_audit(
-            db,
-            user["id"],
-            "purge",
-            "file",
-            file_id,
-            f"彻底删除：{row['original_name']}",
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        restore_staged_files(staged, db)
-        raise
-    discard_staged_files(staged, db)
+    apply_trash_purge(file_id, user, db)

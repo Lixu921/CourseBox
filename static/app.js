@@ -79,6 +79,11 @@ const trashList = document.querySelector("#trash-list");
 const trashPagination = document.querySelector("#trash-pagination");
 const trashFilterKeyword = document.querySelector("#trash-filter-keyword");
 const trashFilterButton = document.querySelector("#trash-filter-button");
+const trashSelectAll = document.querySelector("#trash-select-all");
+const trashSelectionCount = document.querySelector("#trash-selection-count");
+const trashBatchRestore = document.querySelector("#trash-batch-restore");
+const trashBatchPurge = document.querySelector("#trash-batch-purge");
+const trashBatchMessage = document.querySelector("#trash-batch-message");
 const searchCourse = document.querySelector("#search-course");
 const searchType = document.querySelector("#search-type");
 const searchStart = document.querySelector("#search-start");
@@ -123,6 +128,9 @@ let currentFileIds = [];
 // 用户管理里被勾选的用户编号。翻页时清空，避免误操作到看不见的行。
 const selectedUserIds = new Set();
 let currentUserIds = [];
+// 回收站里被勾选的资料编号，同样只在当前这一页有效。
+const selectedTrashIds = new Set();
+let currentTrashIds = [];
 
 function showState(container, message, isError = false) {
   container.innerHTML = "";
@@ -1354,6 +1362,9 @@ function renderAuditRow(item) {
 async function loadTrash(page = 1) {
   if (!trashList) return;
   currentTrashPage = page;
+  // 勾选只在当前这一页有效：翻页或换筛选条件后清空，避免删到看不见的资料。
+  selectedTrashIds.clear();
+  setTrashBatchMessage("");
   showState(trashList, "正在加载回收站...");
   trashPagination.innerHTML = "";
   try {
@@ -1363,6 +1374,8 @@ async function loadTrash(page = 1) {
   } catch (error) {
     showState(trashList, error.message || "回收站加载失败。", true);
     trashPagination.innerHTML = "";
+    currentTrashIds = [];
+    syncTrashSelection();
   }
 }
 
@@ -1376,18 +1389,32 @@ function trashQuery(page) {
 function renderTrash(data) {
   const records = data.items || [];
   trashList.innerHTML = "";
+  currentTrashIds = records.map((item) => item.id);
   if (!records.length) {
     showState(trashList, "回收站是空的");
     renderPagination(trashPagination, null, () => {});
+    syncTrashSelection();
     return;
   }
   records.forEach((item) => trashList.append(renderTrashRow(item)));
   renderPagination(trashPagination, data, (page) => loadTrash(page));
+  syncTrashSelection();
 }
 
 function renderTrashRow(item) {
   const row = document.createElement("li");
   row.className = "user-row";
+
+  const select = document.createElement("input");
+  select.type = "checkbox";
+  select.className = "file-select";
+  select.checked = selectedTrashIds.has(item.id);
+  select.setAttribute("aria-label", `选择回收站资料 ${item.title}`);
+  select.addEventListener("change", () => {
+    if (select.checked) selectedTrashIds.add(item.id);
+    else selectedTrashIds.delete(item.id);
+    syncTrashSelection();
+  });
 
   const identity = document.createElement("div");
   identity.className = "user-identity";
@@ -1423,8 +1450,67 @@ function renderTrashRow(item) {
   purge.addEventListener("click", () => purgeTrashFile(item));
 
   actions.append(restore, purge);
-  row.append(identity, actions);
+  row.append(select, identity, actions);
   return row;
+}
+
+function syncTrashSelection() {
+  const count = selectedTrashIds.size;
+  if (trashSelectionCount) {
+    trashSelectionCount.textContent = count ? `已选 ${count} 个` : "";
+  }
+  if (trashBatchRestore) trashBatchRestore.disabled = count === 0;
+  if (trashBatchPurge) trashBatchPurge.disabled = count === 0;
+  if (trashSelectAll) {
+    const onPage = currentTrashIds.filter((id) => selectedTrashIds.has(id)).length;
+    trashSelectAll.checked =
+      currentTrashIds.length > 0 && onPage === currentTrashIds.length;
+    // 只选了一部分时用「半选」状态，避免看起来像全选或全不选。
+    trashSelectAll.indeterminate =
+      onPage > 0 && onPage < currentTrashIds.length;
+  }
+}
+
+function setTrashBatchMessage(message, isError = false) {
+  if (!trashBatchMessage) return;
+  trashBatchMessage.textContent = message;
+  trashBatchMessage.className = isError ? "form-message error-message" : "form-message";
+}
+
+async function batchTrashAction(kind) {
+  const ids = [...selectedTrashIds];
+  if (!ids.length) return;
+  const restore = kind === "restore";
+  if (!restore) {
+    const confirmed = window.confirm(
+      `彻底删除选中的 ${ids.length} 份资料吗？文件会从磁盘上真正删除，之后无法再恢复。`
+    );
+    if (!confirmed) return;
+  }
+  setTrashBatchMessage("正在处理...");
+  const body = JSON.stringify({ ids });
+  try {
+    // 两个分支各写一条 fetch：路径与方法都必须是字面量，
+    // 否则 tests/test_api.py 的前后端接口一致性测试扫不到这次调用。
+    const response = restore
+      ? await fetch("/api/trash/batch/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        })
+      : await fetch("/api/trash/batch/purge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+    if (!response.ok) throw new Error(await readError(response, "批量操作失败。"));
+    const result = await response.json();
+    setTrashBatchMessage(describeBatchResult("回收站", result), result.failed > 0);
+    selectedTrashIds.clear();
+    await loadTrash(currentTrashPage);
+  } catch (error) {
+    setTrashBatchMessage(error.message || "批量操作失败。", true);
+  }
 }
 
 async function restoreTrashFile(item) {
@@ -1792,6 +1878,19 @@ function initHomePage() {
     event.preventDefault();
     loadTrash(1);
   });
+  trashSelectAll?.addEventListener("change", () => {
+    // 只作用于当前这一页；跨页的勾选状态保持不变。
+    currentTrashIds.forEach((id) => {
+      if (trashSelectAll.checked) selectedTrashIds.add(id);
+      else selectedTrashIds.delete(id);
+    });
+    trashList.querySelectorAll(".file-select").forEach((box) => {
+      box.checked = trashSelectAll.checked;
+    });
+    syncTrashSelection();
+  });
+  trashBatchRestore?.addEventListener("click", () => batchTrashAction("restore"));
+  trashBatchPurge?.addEventListener("click", () => batchTrashAction("purge"));
   myUploadsStatus?.addEventListener("change", () => loadMyUploads(1));
   myUploadsRefreshButton?.addEventListener("click", () => loadMyUploads(currentMyUploadPage));
 
