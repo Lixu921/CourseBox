@@ -599,3 +599,36 @@ def test_upload_blocked_when_disk_space_is_low(tmp_path, monkeypatch):
     assert blocked.status_code == 413
     assert "磁盘空间不足" in blocked.json()["error"]["message"]
     assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_file_edit_optimistic_lock(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "并发资料"}).json()
+    file = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "原名"},
+        files={"file": ("a.txt", b"x", "text/plain")},
+    ).json()
+    assert file["version"] == 1
+
+    ok = client.patch(f"/接口/资料/{file['id']}", json={"title": "第一次", "version": 1})
+    assert ok.status_code == 200
+    assert ok.json()["version"] == 2
+
+    conflict = client.patch(
+        f"/接口/资料/{file['id']}", json={"title": "回退", "version": 1}
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "conflict"
+
+    # 不传版本号仍然可用（后写覆盖）。
+    assert client.patch(
+        f"/接口/资料/{file['id']}", json={"title": "无版本"}
+    ).status_code == 200

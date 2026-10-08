@@ -35,6 +35,8 @@ class CourseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     college: str | None = Field(default=None, max_length=120)
     semester: str | None = Field(default=None, max_length=80)
+    # 客户端看到并基于其编辑的版本号；不传则退化为「后写覆盖」。
+    version: int | None = Field(default=None, ge=1)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -61,6 +63,8 @@ class CourseUpdate(BaseModel):
 
 class FileUpdate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
+    # 客户端看到并基于其编辑的版本号；不传则退化为「后写覆盖」。
+    version: int | None = Field(default=None, ge=1)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -207,6 +211,8 @@ class Course(BaseModel):
     name: str
     college: str | None = None
     semester: str | None = None
+    # 编辑乐观锁：客户端带着自己看到的版本号回传，服务端比对后决定是否放行。
+    version: int = 1
 
 
 class CourseDetail(Course):

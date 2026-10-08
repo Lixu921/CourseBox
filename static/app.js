@@ -960,7 +960,7 @@ async function editFile(file, courseId) {
   const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, version: file.version }),
   });
   if (!response.ok) {
     window.alert(await readError(response, "资料更新失败。"));
@@ -1019,7 +1019,7 @@ async function editCourse(course) {
   const response = await fetch(`/api/courses/${encodeURIComponent(course.id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, version: course.version }),
   });
   if (!response.ok) {
     window.alert(await readError(response, "课程更新失败。"));
@@ -1903,7 +1903,7 @@ async function editMyUpload(file) {
   const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, version: file.version }),
   });
   if (!response.ok) {
     window.alert(await readError(response, "资料更新失败。"));

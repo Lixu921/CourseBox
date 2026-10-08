@@ -211,7 +211,7 @@ def file_response(row: sqlite3.Row) -> dict:
         "size": row["size"],
         "upload_time": row["upload_time"],
     }
-    for key in ("mime_type", "sha256", "status", "uploaded_by"):
+    for key in ("mime_type", "sha256", "status", "uploaded_by", "version"):
         if key in row.keys():
             result[key] = row[key]
     return result
@@ -404,7 +404,7 @@ def list_course_files(
     rows = db.execute(
         f"""
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
+               mime_type, sha256, status, uploaded_by, version
         FROM files AS f WHERE f.course_id = ? AND {visibility}
         ORDER BY id DESC LIMIT ? OFFSET ?
         """,  # noqa: S608 - 可见性片段来自内部常量
@@ -633,7 +633,7 @@ async def upload_course_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
+               mime_type, sha256, status, uploaded_by, version
         FROM files WHERE id = ?
         """,
         (cursor.lastrowid,),
@@ -657,14 +657,19 @@ def update_file(
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     existing = db.execute(
-        "SELECT uploaded_by FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,)
+        "SELECT uploaded_by, version FROM files WHERE id = ? AND deleted_at IS NULL",
+        (file_id,),
     ).fetchone()
     if existing is None:
         raise HTTPException(status_code=404, detail="资料不存在")
     if user["role"] != "admin" and existing["uploaded_by"] != user["id"]:
         raise HTTPException(status_code=403, detail="没有编辑此资料的权限")
+    # 乐观锁：客户端带了版本号且与库里不一致，说明有人先改过，拒绝覆盖。
+    if update.version is not None and update.version != existing["version"]:
+        raise HTTPException(status_code=409, detail="资料已被他人修改，请刷新后重试")
     cursor = db.execute(
-        "UPDATE files SET title = ? WHERE id = ? AND deleted_at IS NULL",
+        "UPDATE files SET title = ?, version = version + 1 "
+        "WHERE id = ? AND deleted_at IS NULL",
         (update.title, file_id),
     )
     if cursor.rowcount == 0:
@@ -675,7 +680,7 @@ def update_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
+               mime_type, sha256, status, uploaded_by, version
         FROM files WHERE id = ?
         """,
         (file_id,),
@@ -991,7 +996,7 @@ def list_my_files(
     rows = db.execute(
         f"""
         SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
-               f.mime_type, f.sha256, f.status, f.uploaded_by,
+               f.mime_type, f.sha256, f.status, f.uploaded_by, f.version,
                c.name AS course_name, c.college, c.semester, f.filename
         FROM files AS f JOIN courses AS c ON c.id = f.course_id
         WHERE {where}
@@ -1066,7 +1071,7 @@ def search_files(
             rows = db.execute(
                 f"""
                 SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
-                       f.mime_type, f.sha256, f.status,
+                       f.mime_type, f.sha256, f.status, f.version,
                        c.name AS course_name, c.college, c.semester, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
                 WHERE {visibility} AND ({clause})
@@ -1117,7 +1122,7 @@ def apply_file_review(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
+               mime_type, sha256, status, uploaded_by, version
         FROM files WHERE id = ?
         """,
         (file_id,),
@@ -1405,7 +1410,7 @@ def restore_trashed_file(
     restored = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by
+               mime_type, sha256, status, uploaded_by, version
         FROM files WHERE id = ?
         """,
         (file_id,),

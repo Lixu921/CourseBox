@@ -53,7 +53,7 @@ def list_courses(
     offset = (page - 1) * page_size
     rows = db.execute(
         f"""
-        SELECT id, name, college, semester FROM courses {where}
+        SELECT id, name, college, semester, version FROM courses {where}
         ORDER BY id DESC LIMIT ? OFFSET ?
         """,  # noqa: S608 - 条件由内部白名单拼接
         (*params, page_size, offset),
@@ -75,7 +75,7 @@ def list_courses(
 def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> CourseDetail:
     row = db.execute(
         """
-        SELECT c.id, c.name, c.college, c.semester,
+        SELECT c.id, c.name, c.college, c.semester, c.version,
                COUNT(CASE WHEN f.status = 'approved' THEN f.id END) AS file_count
         FROM courses AS c
         LEFT JOIN files AS f ON f.course_id = c.id AND f.deleted_at IS NULL
@@ -113,7 +113,7 @@ def create_course(
     record_audit(db, user["id"], "create", "course", cursor.lastrowid, course.name)
     db.commit()
     row = db.execute(
-        "SELECT id, name, college, semester FROM courses WHERE id = ?",
+        "SELECT id, name, college, semester, version FROM courses WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
     return row_to_course(row)
@@ -138,10 +138,21 @@ def update_course(
     if not course.model_fields_set:
         raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
     values = course.model_dump(exclude_unset=True)
+    expected_version = values.pop("version", None)
+    if not values:
+        raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
+    current = db.execute(
+        "SELECT version FROM courses WHERE id = ?", (course_id,)
+    ).fetchone()
+    if current is None:
+        raise HTTPException(status_code=404, detail="课程不存在")
+    # 乐观锁：客户端带了版本号且与库里的不一致，说明有人先改过，拒绝覆盖。
+    if expected_version is not None and expected_version != current["version"]:
+        raise HTTPException(status_code=409, detail="课程已被他人修改，请刷新后重试")
     assignments = ", ".join(f"{field} = ?" for field in values)
     try:
         cursor = db.execute(
-            f"UPDATE courses SET {assignments} WHERE id = ?",  # noqa: S608 - 字段名来自校验过的模型
+            f"UPDATE courses SET {assignments}, version = version + 1 WHERE id = ?",  # noqa: S608 - 字段名来自校验过的模型
             (*values.values(), course_id),
         )
         if cursor.rowcount == 0:
@@ -152,7 +163,8 @@ def update_course(
         db.rollback()
         raise
     row = db.execute(
-        "SELECT id, name, college, semester FROM courses WHERE id = ?", (course_id,)
+        "SELECT id, name, college, semester, version FROM courses WHERE id = ?",
+        (course_id,),
     ).fetchone()
     return row_to_course(row)
 

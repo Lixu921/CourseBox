@@ -84,7 +84,9 @@ def test_course_pagination_and_detail(tmp_path, monkeypatch):
     response = client.get("/接口/课程", params={"page": 2, "page_size": 2})
     assert response.status_code == 200
     assert response.json() == {
-        "items": [{"id": 1, "name": "课程一", "college": None, "semester": None}],
+        "items": [
+            {"id": 1, "name": "课程一", "college": None, "semester": None, "version": 1}
+        ],
         "total": 3,
         "page": 2,
         "page_size": 2,
@@ -294,3 +296,36 @@ def test_course_list_keyword_search(tmp_path, monkeypatch):
     assert len(paged["items"]) == 1
     assert paged["total"] == 2
     assert paged["total_pages"] == 2
+
+
+def test_course_edit_optimistic_lock(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "并发课程"}).json()
+    assert course["version"] == 1
+
+    ok = client.patch(
+        f"/接口/课程/{course['id']}", json={"name": "第一次改名", "version": 1}
+    )
+    assert ok.status_code == 200
+    assert ok.json()["version"] == 2
+
+    # 拿着过期的版本号再改 → 409，不会覆盖别人的修改。
+    conflict = client.patch(
+        f"/接口/课程/{course['id']}", json={"name": "回退覆盖", "version": 1}
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "conflict"
+    assert client.get(f"/接口/课程/{course['id']}").json()["name"] == "第一次改名"
+
+    # 不传版本号退化为后写覆盖，保持旧客户端兼容。
+    assert client.patch(
+        f"/接口/课程/{course['id']}", json={"name": "无版本覆盖"}
+    ).status_code == 200
+    assert client.get(f"/接口/课程/{course['id']}").json()["version"] == 3

@@ -26,7 +26,8 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v2 files 补 mime_type / sha256 / status / uploaded_by
 #   v3 files 补 deleted_at / deleted_by（回收站），users 补 is_active
 #   v4 files 补 upload_time / size 排序索引
-SCHEMA_VERSION = 4
+#   v5 courses / files 补 version（编辑乐观锁）
+SCHEMA_VERSION = 5
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -44,7 +45,8 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 college TEXT,
-                semester TEXT
+                semester TEXT,
+                version INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS files (
@@ -59,6 +61,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 sha256 TEXT,
                 status TEXT NOT NULL DEFAULT 'approved',
                 uploaded_by INTEGER,
+                version INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
             );
 
@@ -202,6 +205,7 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
         return
     migrate_files_table(connection)
     migrate_users_table(connection)
+    migrate_courses_table(connection)
     # PRAGMA 不支持占位符参数，只能拼进语句；值来自本模块的整数常量，不含外部输入。
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")  # noqa: S608
 
@@ -220,10 +224,24 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
         # 回收站：删除资料只打标记，磁盘文件先留着，超期才真正清理。
         "deleted_at": "ALTER TABLE files ADD COLUMN deleted_at TEXT",
         "deleted_by": "ALTER TABLE files ADD COLUMN deleted_by INTEGER",
+        # 编辑乐观锁：每次修改 +1，客户端带上自己看到的版本号，冲突就报 409。
+        "version": "ALTER TABLE files ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
     }
     for column, statement in migrations.items():
         if column not in columns:
             connection.execute(statement)
+
+
+def migrate_courses_table(connection: sqlite3.Connection) -> None:
+    """老库的 courses 补上 version 列（编辑乐观锁）。"""
+
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(courses)").fetchall()
+    }
+    if "version" not in columns:
+        connection.execute(
+            "ALTER TABLE courses ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 def migrate_users_table(connection: sqlite3.Connection) -> None:
