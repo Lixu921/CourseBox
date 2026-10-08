@@ -5,6 +5,14 @@ from conftest import _iter_api_routes, _route_shape
 
 from app.main import app
 
+# 前端按功能拆成三段经典脚本，共享全局作用域；契约检查要把三段合起来看。
+APP_JS_FILES = ("app.js", "app-2.js", "app-3.js")
+
+
+def _app_source() -> str:
+    base = Path(__file__).resolve().parent.parent / "static"
+    return "\n".join((base / name).read_text(encoding="utf-8") for name in APP_JS_FILES)
+
 
 def _frontend_api_calls(source: str) -> list[tuple[str, str]]:
     """从 app.js 里抽出所有指向 /api 的 fetch 调用，返回 (方法, 路径) 列表。"""
@@ -39,9 +47,7 @@ def test_frontend_fetch_calls_match_registered_routes():
     # 后端路由表本身要能解析出来，否则下面的比对会「因为空所以全过」。
     assert routes.get("/api/courses") == {"GET", "POST"}, sorted(routes)
 
-    source = (Path(__file__).resolve().parent.parent / "static" / "app.js").read_text(
-        encoding="utf-8"
-    )
+    source = _app_source()
     calls = _frontend_api_calls(source)
     assert calls, "没从 app.js 解析出任何 /api 调用，解析规则可能已过期"
     assert ("POST", "/api/files/batch/review") in calls
@@ -76,7 +82,7 @@ def test_frontend_element_ids_exist_in_some_page():
     """
 
     pages = _static_pages()
-    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    source = _app_source()
     ids = set(re.findall(r'querySelector\("#([A-Za-z0-9_-]+)"\)', source))
     assert ids, "没从 app.js 解析出任何 id，正则可能已过期"
 

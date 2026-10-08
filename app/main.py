@@ -468,7 +468,9 @@ STATIC_PATH = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_PATH), name="legacy-static")
 
 # 参与版本号计算的资源文件。任何一个变了，页面里引用的地址就跟着变，从而绕过缓存。
-VERSIONED_ASSETS = ("style.css", "app.js")
+# 前端按功能拆成 app.js / app-2.js / app-3.js 三段（经典脚本、共享全局作用域），
+# 三个都要计入哈希，否则只改了后两段时入口版本号不变、浏览器会一直用旧的。
+VERSIONED_ASSETS = ("style.css", "app.js", "app-2.js", "app-3.js")
 # 页面里用占位符代替版本号，避免每次改资源都要手改 HTML。
 ASSET_VERSION_PLACEHOLDER = "{{asset_version}}"
 
@@ -561,6 +563,16 @@ def stylesheet():
 @app.get("/资源/脚本.js", include_in_schema=False)
 def script():
     return FileResponse(STATIC_PATH / "app.js", media_type="text/javascript")
+
+
+@app.get("/资源/脚本2.js", include_in_schema=False)
+def script_part2():
+    return FileResponse(STATIC_PATH / "app-2.js", media_type="text/javascript")
+
+
+@app.get("/资源/脚本3.js", include_in_schema=False)
+def script_part3():
+    return FileResponse(STATIC_PATH / "app-3.js", media_type="text/javascript")
 
 
 @app.get("/资源/图标.svg", include_in_schema=False)
@@ -752,6 +764,146 @@ def check_disk_space() -> dict:
         return {"status": "error", "message": "磁盘空间检查失败"}
 
 
+# 接口文档中文化。用「一组显式映射 + 按精确名替换 $ref」实现：
+# - 旧实现用子串替换 $ref，`Course` 会先把 `CourseCreate` 改坏（变成「课程Create」）；
+#   这里按组件全名精确映射，不再误伤。
+# - 模型名、路径参数、属性标题各自一张表，新增模型时照着补一行即可。
+OPENAPI_SCHEMA_TITLES = {
+    "Course": "课程",
+    "CourseCreate": "课程创建请求",
+    "CourseUpdate": "课程更新请求",
+    "CourseDetail": "课程详情",
+    "CoursePage": "课程分页响应",
+    "CourseQuota": "课程配额",
+    "FileUpdate": "资料更新请求",
+    "FileReview": "资料审核请求",
+    "FilePage": "资料分页响应",
+    "FileBatchReview": "批量审核请求",
+    "LoginRequest": "登录请求",
+    "PasswordChange": "修改密码请求",
+    "PasswordReset": "重置密码请求",
+    "User": "用户",
+    "UserAdmin": "用户详情",
+    "UserCreate": "用户创建请求",
+    "UserUpdate": "用户更新请求",
+    "UserBatchUpdate": "批量修改用户请求",
+    "UserPage": "用户分页响应",
+    "BatchIds": "编号列表",
+    "BatchItemResult": "批量结果项",
+    "BatchResult": "批量结果",
+    "PageInfo": "分页信息",
+    "ShareCreate": "创建分享请求",
+    "ShareLink": "分享链接",
+    "ShareView": "分享内容",
+    "TrashFile": "回收站资料",
+    "TrashFilePage": "回收站分页响应",
+    "AuditLog": "操作记录",
+    "AuditLogPage": "操作记录分页响应",
+    "HTTPValidationError": "请求校验错误",
+    "ValidationError": "字段校验错误",
+}
+OPENAPI_BODY_TITLE = "资料上传请求"
+OPENAPI_PATH_PARAM_TITLES = {
+    "course_id": "课程编号",
+    "file_id": "资料编号",
+    "share_id": "分享编号",
+    "token": "令牌",
+    "coursebox_session": "会话令牌",
+}
+OPENAPI_PROPERTY_TITLES = {
+    "id": "编号",
+    "name": "名称",
+    "college": "学院",
+    "semester": "学期",
+    "version": "版本号",
+    "tags": "标签",
+    "file_count": "资料数量",
+    "title": "资料标题",
+    "file": "资料文件",
+    "original_name": "原文件名",
+    "size": "大小",
+    "upload_time": "上传时间",
+    "username": "用户名",
+    "password": "密码",
+    "role": "角色",
+    "is_active": "是否启用",
+    "created_at": "创建时间",
+    "upload_count": "上传资料数",
+    "status": "状态",
+    "uploaded_by": "上传者",
+    "mime_type": "MIME 类型",
+    "sha256": "SHA-256 哈希",
+    "detail": "错误详情",
+    "loc": "位置",
+    "msg": "错误信息",
+    "type": "错误类型",
+    "input": "输入内容",
+    "ctx": "错误上下文",
+    "allowed_bytes": "本次允许字节数",
+    "reason": "受限原因",
+    "max_file_size": "单文件上限",
+    "course_limit": "课程上限",
+    "course_used": "课程已用",
+    "course_remaining": "课程剩余",
+    "site_limit": "站点上限",
+    "site_used": "站点已用",
+    "site_remaining": "站点剩余",
+    "user_limit": "我的上限",
+    "user_used": "我的已用",
+    "user_remaining": "我的剩余",
+    "disk_free": "磁盘剩余",
+    "days": "有效天数",
+    "note": "备注",
+    "token": "令牌",
+    "url": "链接",
+    "expires_at": "过期时间",
+    "files": "资料列表",
+    "course": "课程",
+    "items": "列表",
+    "total": "总数",
+    "page": "页码",
+    "page_size": "每页数量",
+    "total_pages": "总页数",
+}
+
+OPENAPI_REF_PREFIX = "#/components/schemas/"
+
+
+def _localize_paths(schema: dict) -> None:
+    for path in list(schema["paths"]):
+        localized = path
+        for old_name, title in OPENAPI_PATH_PARAM_TITLES.items():
+            localized = localized.replace("{" + old_name + "}", "{" + title + "}")
+        if localized != path:
+            schema["paths"][localized] = schema["paths"].pop(path)
+        for operation in schema["paths"][localized].values():
+            if not isinstance(operation, dict):
+                continue
+            for parameter in operation.get("parameters", []):
+                title = OPENAPI_PATH_PARAM_TITLES.get(parameter.get("name"))
+                if title:
+                    parameter["name"] = title
+                    parameter.setdefault("schema", {})["title"] = title
+
+
+def _localize_references(value: object, names: dict[str, str]) -> None:
+    """按组件全名精确映射 $ref，避免子串替换误伤（如 Course / CourseCreate）。"""
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "$ref" and isinstance(item, str) and item.startswith(
+                OPENAPI_REF_PREFIX
+            ):
+                component = item[len(OPENAPI_REF_PREFIX) :]
+                if component in names:
+                    value[key] = OPENAPI_REF_PREFIX + names[component]
+            else:
+                _localize_references(item, names)
+    elif isinstance(value, list):
+        for item in value:
+            _localize_references(item, names)
+
+
 def localized_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -762,115 +914,29 @@ def localized_openapi():
         description="课盒子课程资料共享接口。",
         routes=app.routes,
     )
-
     schema["info"]["title"] = "课盒子接口"
     schema["info"]["description"] = "课盒子课程资料共享接口。"
 
-    for path in list(schema["paths"]):
-        localized_path = path.replace("{course_id}", "{课程编号}").replace(
-            "{file_id}", "{资料编号}"
-        )
-        if localized_path != path:
-            schema["paths"][localized_path] = schema["paths"].pop(path)
-        for operation in schema["paths"][localized_path].values():
-            if not isinstance(operation, dict):
-                continue
-            for parameter in operation.get("parameters", []):
-                if parameter.get("name") == "course_id":
-                    parameter["name"] = "课程编号"
-                    parameter.setdefault("schema", {})["title"] = "课程编号"
-                elif parameter.get("name") == "file_id":
-                    parameter["name"] = "资料编号"
-                    parameter.setdefault("schema", {})["title"] = "资料编号"
-                elif parameter.get("name") == "coursebox_session":
-                    parameter["name"] = "会话令牌"
-                    parameter.setdefault("schema", {})["title"] = "会话令牌"
+    _localize_paths(schema)
 
-    schema_titles = {
-        "Course": "课程",
-        "CourseCreate": "课程创建请求",
-        "CourseUpdate": "课程更新请求",
-        "CourseDetail": "课程详情",
-        "FileUpdate": "资料更新请求",
-        "LoginRequest": "登录请求",
-        "UserCreate": "用户创建请求",
-        "User": "用户",
-        "UserAdmin": "用户详情",
-        "UserUpdate": "用户更新请求",
-        "UserPage": "用户分页响应",
-        "PasswordReset": "重置密码请求",
-        "FileReview": "资料审核请求",
-        "PageInfo": "分页信息",
-        "CoursePage": "课程分页响应",
-        "FilePage": "资料分页响应",
-        "HTTPValidationError": "请求校验错误",
-        "ValidationError": "字段校验错误",
-    }
     schemas = schema.get("components", {}).get("schemas", {})
-    schema_names = {
-        **{name: title for name, title in schema_titles.items()},
-        **{
-            name: "资料上传请求"
-            for name in schemas
-            if name.startswith("Body_")
-        },
-    }
+    names = dict(OPENAPI_SCHEMA_TITLES)
+    for name in schemas:
+        if name.startswith("Body_"):
+            names[name] = OPENAPI_BODY_TITLE
 
-    def replace_schema_references(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if key == "$ref" and isinstance(item, str):
-                    for old_name, new_name in schema_names.items():
-                        item = item.replace(
-                            f"#/components/schemas/{old_name}",
-                            f"#/components/schemas/{new_name}",
-                        )
-                    value[key] = item
-                else:
-                    replace_schema_references(item)
-        elif isinstance(value, list):
-            for item in value:
-                replace_schema_references(item)
-
-    replace_schema_references(schema)
+    _localize_references(schema, names)
 
     localized_schemas = {}
-    for schema_name, schema_body in schemas.items():
-        localized_name = schema_names.get(schema_name, schema_name)
-        if schema_name in schema_titles:
-            schema_body["title"] = schema_titles[schema_name]
-        elif schema_name.startswith("Body_"):
-            schema_body["title"] = "资料上传请求"
-        for property_name, property_body in schema_body.get("properties", {}).items():
-            property_titles = {
-                "id": "编号",
-                "name": "名称",
-                "college": "学院",
-                "semester": "学期",
-                "file_count": "资料数量",
-                "title": "资料标题",
-                "file": "资料文件",
-                "username": "用户名",
-                "password": "密码",
-                "role": "角色",
-                "is_active": "是否启用",
-                "created_at": "创建时间",
-                "upload_count": "上传资料数",
-                "status": "状态",
-                "uploaded_by": "上传者",
-                "mime_type": "MIME 类型",
-                "sha256": "SHA-256 哈希",
-                "detail": "错误详情",
-                "loc": "位置",
-                "msg": "错误信息",
-                "type": "错误类型",
-                "input": "输入内容",
-                "ctx": "错误上下文",
-            }
-            if property_name in property_titles:
-                property_body["title"] = property_titles[property_name]
-        localized_schemas[localized_name] = schema_body
-
+    for name, body in schemas.items():
+        title = names.get(name)
+        if title:
+            body["title"] = title
+        for property_name, property_body in body.get("properties", {}).items():
+            property_title = OPENAPI_PROPERTY_TITLES.get(property_name)
+            if property_title and isinstance(property_body, dict):
+                property_body["title"] = property_title
+        localized_schemas[names.get(name, name)] = body
     schema["components"]["schemas"] = localized_schemas
 
     app.openapi_schema = schema

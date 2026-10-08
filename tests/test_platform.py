@@ -55,6 +55,8 @@ def test_pages_are_available():
     chinese_style = client.get("/\u8d44\u6e90/\u6837\u5f0f.css")
     static_script = client.get("/static/app.js")
     static_style = client.get("/static/style.css")
+    script_part2 = client.get("/资源/脚本2.js")
+    script_part3 = client.get("/资源/脚本3.js")
 
     assert homepage.status_code == 200
     assert 'id="search-form"' in homepage.text
@@ -68,9 +70,13 @@ def test_pages_are_available():
     assert chinese_style.status_code == 200
     assert static_script.status_code == 200
     assert static_style.status_code == 200
+    assert script_part2.status_code == 200
+    assert script_part3.status_code == 200
     # 页面引用带内容哈希版本号的中文静态路由，便于长期缓存后强制刷新。
     assert 'href="/资源/样式.css?v=' in homepage.text
     assert 'src="/资源/脚本.js?v=' in homepage.text
+    assert 'src="/资源/脚本2.js?v=' in homepage.text
+    assert 'src="/资源/脚本3.js?v=' in homepage.text
     assert 'href="/资源/图标.svg"' in homepage.text
     assert 'id="login-form"' in homepage.text
     assert 'id="admin-course-panel"' in homepage.text
@@ -686,3 +692,31 @@ def test_authenticated_write_rate_limit(tmp_path, monkeypatch):
     assert blocked.json()["error"]["code"] == "too_many_requests"
     # 读操作不计入账号写限流。
     assert client.get("/接口/课程").status_code == 200
+
+
+def test_openapi_localization_is_robust():
+    """本地化按组件全名精确映射，不能像旧的子串替换那样把 CourseCreate 改坏。"""
+
+    client = create_client()
+    schema = client.get("/接口定义").json()
+    components = schema["components"]["schemas"]
+
+    assert "课程" in components
+    assert "课程创建请求" in components
+    assert "分享链接" in components
+    assert "分享内容" in components
+    assert components["课程创建请求"]["title"] == "课程创建请求"
+
+    # Course 的 $ref 精确指向「课程」，没有被 CourseCreate 误伤成「课程Create」。
+    course_ref = components["分享内容"]["properties"]["course"]["$ref"]
+    assert course_ref == "#/components/schemas/课程"
+    assert "Course" not in components
+    assert "ShareLink" not in components
+
+    # 属性标题与路径参数都已中文化。
+    assert components["课程"]["properties"]["tags"]["title"] == "标签"
+    assert components["分享链接"]["properties"]["token"]["title"] == "令牌"
+    for path in schema["paths"]:
+        assert "course_id" not in path
+        assert "file_id" not in path
+        assert "{token}" not in path

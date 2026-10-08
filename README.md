@@ -51,7 +51,9 @@ CourseBox/
 │  ├─ course.html       # 课程详情页
 │  ├─ error.html       # 浏览器访问出错时的中文错误页
 │  ├─ share.html        # 只读分享页
-│  ├─ app.js            # 原生 JavaScript 交互
+│  ├─ app.js            # 原生 JavaScript 交互（第一段）
+│  ├─ app-2.js          # 原生 JavaScript 交互（第二段）
+│  ├─ app-3.js          # 原生 JavaScript 交互（第三段）
 │  ├─ share.js          # 分享页脚本
 │  ├─ style.css         # 页面样式
 │  └─ favicon.svg       # 网站图标
@@ -96,6 +98,8 @@ CourseBox/
 ├─ TASKBOOK_ROUND13.md  # 第十三轮（按上传者配额）任务书
 ├─ TASKBOOK_ROUND14.md  # 第十四轮（课程标签）任务书
 ├─ TASKBOOK_ROUND15.md  # 第十五轮（只读分享链接）任务书
+├─ TASKBOOK_ROUND16.md  # 第十六轮（OpenAPI 本地化重写）任务书
+├─ TASKBOOK_ROUND17.md  # 第十七轮（前端经典脚本拆分）任务书
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ render.yaml          # Render 部署配置
 ├─ requirements.txt     # 运行时依赖
@@ -180,7 +184,7 @@ py -m ruff check .
 py -m pytest -q
 ```
 
-测试按域拆成 14 个文件（公共夹具在 `tests/conftest.py`），共 149 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、安全响应头、限流（IP 与账户写）、接口文档 CSP、请求体上限（Content-Length 与分块）、课程增删改查与分页、课程标签、编辑乐观锁、资料上传下载预览、可执行内容拦截、上传配额（单课程/站点/单用户）、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、只读分享链接、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
+测试按域拆成 14 个文件（公共夹具在 `tests/conftest.py`），共 150 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、安全响应头、限流（IP 与账户写）、接口文档 CSP 与本地化、请求体上限（Content-Length 与分块）、课程增删改查与分页、课程标签、编辑乐观锁、资料上传下载预览、可执行内容拦截、上传配额（单课程/站点/单用户）、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、只读分享链接、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
 仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`），并跑一次依赖安全扫描（`pip-audit`，先只报告不阻断）。另有一个 `smoke` 任务：起真实 `uvicorn` 后执行 `scripts/smoke.py`，覆盖 TestClient 会绕过的那部分（中间件顺序、路由匹配）。推送或提交 PR 时自动执行。
 
@@ -258,8 +262,8 @@ Linux/macOS 用 cron 每天 3 点执行，保留最近 7 组：
 - **只支持单实例部署。** 数据库是 SQLite（单写者），限流计数存在进程内存里。同时跑多个进程或实例时，每个实例各算各的限额，实际放行量会变成「实例数 × 配置额度」，SQLite 的并发写也会成为瓶颈。要水平扩展得先换掉这两处（外部数据库 + 共享的限流存储）。
 - **静态资源版本号按进程缓存。** `asset_version` 取资源内容哈希，进程内只算一次。因为结果只由文件内容决定，多实例算出来一致，这一项本身不影响多实例；只是换上新资源后要重启（或等进程重算）版本号才会更新。
 - **数据库迁移是手写的 `ALTER`。** 加列靠 `PRAGMA table_info` 判断后再补，当前结构版本记在 `PRAGMA user_version`（见 `app/db.py` 的 `SCHEMA_VERSION`）。没有引入 Alembic 之类的迁移框架，规模明显增长前够用。
-- **前端是单个 `app.js`。** 没有构建链、没有模块化——这是刻意的（不引入 node/npm 与 CDN，保证离线可用）。前后端接口的一致性由 `tests/test_frontend_contract.py` 兜底，代价是文件较长、阅读成本偏高。
-- **接口文档的中文化在 `app/main.py` 里做后处理。** 生成 OpenAPI 之后再替换中文标题，所以给模型改名时中文名会静默退回英文，且不会有测试报错。
+- **前端按功能拆成三段经典脚本（`app.js` / `app-2.js` / `app-3.js`），共享全局作用域。** 没有构建链、没有 ES 模块——这是刻意的（不引入 node/npm 与 CDN，保证离线可用）。三段按原顺序用 `<script>` 依次加载，执行语义与单文件一致；三段都计入内容哈希版本号。前后端接口的一致性由 `tests/test_frontend_contract.py` 兜底（会扫描全部三段）。
+- **接口文档的中文化仍在 `app/main.py` 里做后处理。** 生成 OpenAPI 后再按显式映射改名：模型名、路径参数、属性标题各一张表，`$ref` 按组件全名精确替换（旧实现用子串替换，会把 `CourseCreate` 误伤成「课程Create」，已修）。新增模型若忘了登记会退回英文；已加测试守住 `Course` / `ShareLink` 等关键名。
 - **请求体上限有两条防线。** 带 `Content-Length` 的请求在读取正文前直接 413；分块传输（`Transfer-Encoding: chunked`，没有该头）由 ASGI 层按实际读到的字节数兜底。生产环境仍建议再由反向代理限制请求体大小。
 - **代理来源识别要显式开启。** 默认不信任 `X-Forwarded-For`（直连时它能被伪造、用来绕过限流）；反向代理部署需设 `COURSEBOX_TRUST_PROXY=true`，否则限流与登录锁定会退化成按代理 IP 计数。
 - **接口文档默认开启。** `/接口文档`、`/接口说明`、`/接口定义` 对外可访问；关闭用 `COURSEBOX_ENABLE_DOCS=false`，此时需自行为 Swagger/ReDoc 页面设置允许 CDN 的 CSP（当前实现会给这两个前缀下发专用策略）。
