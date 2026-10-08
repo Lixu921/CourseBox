@@ -42,6 +42,9 @@ DEFAULT_REQUEST_OVERHEAD = 1024 * 1024
 # 健康检查结果缓存秒数。监控高频轮询时，避免每次都新开连接跑一遍 PRAGMA quick_check；
 # 0 表示不缓存（每次请求都真查）。
 DEFAULT_HEALTH_CACHE_SECONDS = 10
+# 已登录账户的「写操作」限流（每分钟）。IP 限流在校园网等共用出口下会变成全站共享，
+# 这里再按账号加一道闸，只对 POST/PUT/PATCH/DELETE 生效，避免用户被别人的写入挤掉。
+DEFAULT_ACCOUNT_RATE_LIMIT_PER_MINUTE = 120
 
 logger = logging.getLogger("coursebox.config")
 
@@ -231,6 +234,7 @@ class Settings:
     enable_docs: bool
     max_request_bytes: int
     health_cache_seconds: int
+    account_rate_limit_per_minute: int
 
     @property
     def is_production(self) -> bool:
@@ -301,5 +305,9 @@ def get_settings() -> Settings:
         # 0 表示关闭缓存；非法值回退默认。复用「非负整数」解析。
         health_cache_seconds=_quota_bytes(
             "COURSEBOX_HEALTH_CACHE_SECONDS", DEFAULT_HEALTH_CACHE_SECONDS
+        ),
+        account_rate_limit_per_minute=_positive_int(
+            "COURSEBOX_ACCOUNT_RATE_LIMIT_PER_MINUTE",
+            DEFAULT_ACCOUNT_RATE_LIMIT_PER_MINUTE,
         ),
     )

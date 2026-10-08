@@ -632,3 +632,35 @@ def test_file_edit_optimistic_lock(tmp_path, monkeypatch):
     assert client.patch(
         f"/接口/资料/{file['id']}", json={"title": "无版本"}
     ).status_code == 200
+
+
+def test_upload_rejects_executable_content(tmp_path, monkeypatch):
+    """扩展名与 MIME 都能伪造，内容以可执行文件头开头的一律拒绝。"""
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "伪装课程"}).json()
+
+    fake = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "伪装成 PDF"},
+        files={"file": ("fake.pdf", b"MZ\x90\x00" + b"x" * 200, "application/pdf")},
+    )
+    assert fake.status_code == 415
+    assert "可执行" in fake.json()["error"]["message"]
+    # 被拒后不留孤儿文件。
+    assert not list((tmp_path / "uploads").glob("*"))
+
+    # 正常 PDF 仍然可以上传。
+    ok = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "真 PDF"},
+        files={"file": ("real.pdf", b"%PDF-1.4\n%content", "application/pdf")},
+    )
+    assert ok.status_code == 201

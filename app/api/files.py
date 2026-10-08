@@ -94,6 +94,18 @@ DANGEROUS_EXTENSIONS = {
     ".wsf",
     ".wsh",
 }
+# 可执行文件的内容特征。扩展名和 MIME 都能被伪造（例如把 exe 改名为 .pdf），
+# 所以上传后再看一眼文件头，命中就直接拒绝。
+DANGEROUS_MAGIC = (
+    b"MZ",  # Windows PE / DOS
+    b"\x7fELF",  # ELF
+    b"\xca\xfe\xba\xbe",  # Mach-O fat
+    b"\xce\xfa\xed\xfe",  # Mach-O 32 位小端
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64 位小端
+    b"\xfe\xed\xfa\xce",  # Mach-O 32 位大端
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64 位大端
+)
+MAGIC_PREFIX_LENGTH = 8
 # FTS5 的 trigram 分词器只索引长度不小于 3 的片段。
 MIN_FTS_TERM_LENGTH = 3
 
@@ -573,8 +585,11 @@ async def upload_course_file(
 
         size = 0
         digest = hashlib.sha256()
+        head = b""
         with stored_path.open("wb") as output:
             while chunk := await file.read(1024 * 1024):
+                if not head:
+                    head = chunk[:MAGIC_PREFIX_LENGTH]
                 size += len(chunk)
                 if size > allowance:
                     raise HTTPException(status_code=413, detail=limit_reason)
@@ -582,6 +597,8 @@ async def upload_course_file(
                 output.write(chunk)
         if size == 0:
             raise HTTPException(status_code=422, detail="文件不能为空")
+        if head.startswith(DANGEROUS_MAGIC):
+            raise HTTPException(status_code=415, detail="不允许上传可执行文件")
 
         try:
             cursor = db.execute(

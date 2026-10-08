@@ -630,3 +630,59 @@ def test_health_cache_can_be_disabled(tmp_path, monkeypatch):
     client.get("/接口/健康")
     client.get("/接口/健康")
     assert len(calls) == 2
+
+
+def test_additional_security_headers():
+    client = create_client()
+    headers = client.get("/").headers
+    assert headers["Permissions-Policy"]
+    assert "geolocation=()" in headers["Permissions-Policy"]
+    assert headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert headers["Cross-Origin-Resource-Policy"] == "same-origin"
+
+
+def test_chunked_body_over_limit_is_rejected(tmp_path, monkeypatch):
+    """分块传输没有 Content-Length，靠 ASGI 层数字节兜底。"""
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_MAX_REQUEST_BYTES", "1000")
+
+    from app.db import init_db
+
+    init_db()
+    client = create_client()
+
+    def chunks():
+        for _ in range(10):
+            yield b"x" * 500
+
+    response = client.post(
+        "/接口/登录",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+
+
+def test_authenticated_write_rate_limit(tmp_path, monkeypatch):
+    """已登录用户的写操作按账号限流，避免共用出口 IP 时互相挤占。"""
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_ACCOUNT_RATE_LIMIT_PER_MINUTE", "2")
+
+    from app.db import init_db
+
+    init_db()
+    client = create_client()
+    login_admin(client)
+
+    assert client.post("/接口/课程", json={"name": "甲"}).status_code == 201
+    assert client.post("/接口/课程", json={"name": "乙"}).status_code == 201
+    blocked = client.post("/接口/课程", json={"name": "丙"})
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "too_many_requests"
+    # 读操作不计入账号写限流。
+    assert client.get("/接口/课程").status_code == 200

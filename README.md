@@ -84,6 +84,7 @@ CourseBox/
 ├─ TASKBOOK_ROUND8.md   # 第八轮（运行期整洁）任务书
 ├─ TASKBOOK_ROUND9.md   # 第九轮（健康检查缓存与审计游标）任务书
 ├─ TASKBOOK_ROUND10.md  # 第十轮（编辑乐观锁）任务书
+├─ TASKBOOK_ROUND11.md  # 第十一轮（请求体/限流/内容校验加固）任务书
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ render.yaml          # Render 部署配置
 ├─ requirements.txt     # 运行时依赖
@@ -124,7 +125,7 @@ $env:COURSEBOX_UPLOAD_DIR = "uploads"
 $env:COURSEBOX_ADMIN_PASSWORD = "请替换为至少 8 位密码"
 ```
 
-支持的主要配置包括数据库路径、上传目录、单文件大小、请求体上限、健康检查缓存秒数、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。前面有反向代理时设 `COURSEBOX_TRUST_PROXY=true`，让限流与登录锁定按 `X-Forwarded-For` 区分访客；生产环境可用 `COURSEBOX_ENABLE_DOCS=false` 关闭接口文档。完整列表见 `.env.example`。
+支持的主要配置包括数据库路径、上传目录、单文件大小、请求体上限、健康检查缓存秒数、账户写操作限流、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。前面有反向代理时设 `COURSEBOX_TRUST_PROXY=true`，让限流与登录锁定按 `X-Forwarded-For` 区分访客；生产环境可用 `COURSEBOX_ENABLE_DOCS=false` 关闭接口文档。完整列表见 `.env.example`。
 
 ## 启动项目
 
@@ -168,7 +169,7 @@ py -m ruff check .
 py -m pytest -q
 ```
 
-测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 141 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、限流、接口文档 CSP、请求体上限、课程增删改查与分页、编辑乐观锁、资料上传下载预览、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
+测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 145 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、安全响应头、限流（IP 与账户写）、接口文档 CSP、请求体上限（Content-Length 与分块）、课程增删改查与分页、编辑乐观锁、资料上传下载预览、可执行内容拦截、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
 仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
 
@@ -241,7 +242,7 @@ Linux/macOS 用 cron 每天 3 点执行，保留最近 7 组：
 - **数据库迁移是手写的 `ALTER`。** 加列靠 `PRAGMA table_info` 判断后再补，当前结构版本记在 `PRAGMA user_version`（见 `app/db.py` 的 `SCHEMA_VERSION`）。没有引入 Alembic 之类的迁移框架，规模明显增长前够用。
 - **前端是单个 `app.js`。** 没有构建链、没有模块化——这是刻意的（不引入 node/npm 与 CDN，保证离线可用）。前后端接口的一致性由 `tests/test_frontend_contract.py` 兜底，代价是文件较长、阅读成本偏高。
 - **接口文档的中文化在 `app/main.py` 里做后处理。** 生成 OpenAPI 之后再替换中文标题，所以给模型改名时中文名会静默退回英文，且不会有测试报错。
-- **请求体上限依赖 `Content-Length`。** 应用只在这个头上做前置拦截；分块传输（`Transfer-Encoding: chunked`，不带长度）绕得过去，生产环境应再由反向代理限制请求体大小。
+- **请求体上限有两条防线。** 带 `Content-Length` 的请求在读取正文前直接 413；分块传输（`Transfer-Encoding: chunked`，没有该头）由 ASGI 层按实际读到的字节数兜底。生产环境仍建议再由反向代理限制请求体大小。
 - **代理来源识别要显式开启。** 默认不信任 `X-Forwarded-For`（直连时它能被伪造、用来绕过限流）；反向代理部署需设 `COURSEBOX_TRUST_PROXY=true`，否则限流与登录锁定会退化成按代理 IP 计数。
 - **接口文档默认开启。** `/接口文档`、`/接口说明`、`/接口定义` 对外可访问；关闭用 `COURSEBOX_ENABLE_DOCS=false`，此时需自行为 Swagger/ReDoc 页面设置允许 CDN 的 CSP（当前实现会给这两个前缀下发专用策略）。
 

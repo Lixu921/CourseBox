@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
@@ -133,6 +133,45 @@ app.include_router(users_router)
 app.include_router(audit_router)
 
 
+class BodySizeLimitMiddleware:
+    """在 ASGI 层包裹 receive，按实际读到的字节数限制请求体。
+
+    上面的 HTTP 中间件只能看 Content-Length；分块传输没有这个头。这里直接数流过的
+    字节，超限就抛 413 的 HTTPException。
+
+    两点关键：
+    - 必须抛 FastAPI 自己的 HTTPException：FastAPI 读取请求体时只把它的 HTTPException
+      原样再抛，其它异常会被改写成 400。
+    - 注册顺序必须最早，让它成为最内层用户中间件。若它和 FastAPI 之间还夹着
+      BaseHTTPMiddleware（@app.middleware 装饰的那些），异常会被那一层吞掉。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = get_settings().max_request_bytes
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise HTTPException(status_code=413, detail="请求内容过大")
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+
+# 先注册它，才会落在最内层（add_middleware 是「后注册的在外层」）。
+app.add_middleware(BodySizeLimitMiddleware)
+
+
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -148,6 +187,10 @@ SECURITY_HEADERS = {
     # 在线预览靠同源 iframe 承载，所以只能是 SAMEORIGIN，不能用 DENY。
     "X-Frame-Options": "SAMEORIGIN",
     "Referrer-Policy": "no-referrer",
+    # 站点不需要摄像头/麦克风/定位等能力，直接全部关掉。
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
 }
 
 # 页面没有内联脚本、没有内联样式、也没有外部 CDN，所以 CSP 可以收紧到只允许同源。
@@ -416,6 +459,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return request_error_response(
         request, status.HTTP_500_INTERNAL_SERVER_ERROR, "服务器内部错误"
     )
+
 
 STATIC_PATH = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_PATH), name="legacy-static")

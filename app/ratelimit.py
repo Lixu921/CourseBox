@@ -63,12 +63,16 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+# 已登录账户的写操作限流，按用户编号计数。只用来兜住「同一出口 IP 下的用户互相挤占」，
+# 与按 IP 的 rate_limiter 各算各的。
+account_rate_limiter = RateLimiter()
 
 
 def reset_rate_limits() -> None:
     """清空计数，让每个测试用例都从干净状态开始。"""
 
     rate_limiter.reset()
+    account_rate_limiter.reset()
 
 
 def client_ip(request: Request) -> str:

@@ -22,6 +22,7 @@ from app.db import (
     record_audit,
     register_login_failure,
 )
+from app.ratelimit import account_rate_limiter
 from app.ratelimit import client_ip as resolve_client_ip
 from app.schemas import LoginRequest, PasswordChange, User
 
@@ -103,6 +104,19 @@ def current_user(
     row = find_session_user(session_cookie, db, request)
     if row is None:
         raise HTTPException(status_code=401, detail="请先登录")
+    # 写操作再按账号限一道：IP 限流在校园网等共用出口下会退化成全站共享，
+    # 一个用户的高频写入会把别人的正常操作挤掉。只在已验证登录后进行，不额外查库。
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        settings = get_settings()
+        allowed, retry_after = account_rate_limiter.hit(
+            f"user:{row['id']}", settings.account_rate_limit_per_minute
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="操作过于频繁，请稍后再试",
+                headers={"Retry-After": str(retry_after)},
+            )
     return row
 
 
