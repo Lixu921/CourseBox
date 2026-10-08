@@ -71,8 +71,18 @@ CourseBox/
 │  ├─ db_check.py       # 备份完整性校验
 │  └─ restore.ps1       # 备份校验和恢复
 ├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest（3.13 腿带覆盖率门槛）
+├─ .dockerignore        # 容器构建忽略清单
 ├─ .env.example         # 环境配置示例
+├─ .gitignore           # 排除 data/、uploads/、backups/ 等
+├─ DEPLOY.md            # 部署说明
+├─ Dockerfile           # 容器镜像构建
+├─ LICENSE              # 开源许可
+├─ README.md            # 项目说明（本文件）
+├─ TASKBOOK.md          # 开工时的原始任务书（正文属历史，见其中的「现状注记」）
+├─ TASKBOOK_OPTIMIZATION.md  # 各轮优化的完成记录
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
+├─ render.yaml          # Render 部署配置
+├─ requirements.txt     # 运行与开发依赖
 ├─ data/                # 本地 SQLite 数据库，不提交到 Git
 ├─ uploads/             # 上传文件，不提交到 Git
 └─ backups/             # 备份输出目录，不提交到 Git
