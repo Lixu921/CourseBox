@@ -4,6 +4,15 @@
 > 目标:做出一个**带完整网页**的课程资料共享小站,分 8 个里程碑推进。
 > 规则:每个里程碑都有**客观验收命令**,跑不过就自己修,修不好就停下汇报。
 
+> **现状注记(后加;判断当前结构请勿只看本文件正文)**
+> 本文件是项目开工时的原始任务书,正文(尤其第 2 节目录树、以及各里程碑里「在
+> `tests/test_api.py` 里写用例」的说法)记录的是**当时**的规划。项目演进后已不同:
+> 测试按域拆成 `tests/` 下 13 个文件 + `conftest.py`(不再是单文件 `tests/test_api.py`);
+> `app/` 下新增 `config.py`、`auth.py`、`csv_export.py`、`ratelimit.py` 与
+> `api/audit.py`、`api/common.py`;代码目录也从 `Desktop\CourseBox` 迁到
+> `Desktop\study\CourseBox`。当前结构与各轮改动见 `README.md` 与 `TASKBOOK_OPTIMIZATION.md`。
+> 正文保留原文不改,只为留下当初的验收标准。
+
 ## 0.5 项目起点(重要)
 **当前目录是空的,除本任务书外没有任何文件。你必须从零初始化**:
 在 M0 里自己完成 `git init`、创建 `.gitignore`、`requirements.txt`、装依赖、建目录、写最小 FastAPI 骨架。

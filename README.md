@@ -27,30 +27,52 @@
 ```text
 CourseBox/
 ├─ app/
-│  ├─ api/auth.py       # 登录、当前用户、退出
-│  ├─ api/courses.py    # 课程接口
-│  ├─ api/files.py      # 资料上传、下载、预览和搜索接口
-│  ├─ api/users.py      # 管理员用户管理
+│  ├─ api/
+│  │  ├─ audit.py       # 审计日志查询与导出（管理员）
+│  │  ├─ auth.py        # 登录、当前用户、退出、自助改密
+│  │  ├─ common.py      # 分页、LIKE 转义、日期解析等公共工具
+│  │  ├─ courses.py     # 课程接口
+│  │  ├─ files.py       # 资料上传、下载、预览、搜索、回收站、打包与导出
+│  │  └─ users.py       # 管理员用户管理
+│  ├─ auth.py           # 口令哈希与会话令牌
 │  ├─ backup.py         # 数据库与上传目录备份、轮转
-│  ├─ db.py             # SQLite 连接和建表
-│  ├─ maintenance.py    # 审计日志与登录记录的保留策略清理
-│  ├─ main.py           # FastAPI 应用和页面路由
+│  ├─ config.py         # 环境变量与运行配置
+│  ├─ csv_export.py     # CSV 渲染（BOM、CRLF、公式注入中和、中文文件名）
+│  ├─ db.py             # SQLite 连接、建表、迁移与清理
+│  ├─ main.py           # FastAPI 应用、页面路由、中间件与接口文档本地化
+│  ├─ maintenance.py    # 保留策略清理（审计日志、登录记录、过期会话、回收站）
+│  ├─ ratelimit.py      # 进程内限流
 │  └─ schemas.py        # 请求、响应模型
 ├─ static/
 │  ├─ index.html        # 首页
 │  ├─ course.html       # 课程详情页
+│  ├─ error.html        # 浏览器访问出错时的中文错误页
 │  ├─ app.js            # 原生 JavaScript 交互
-│  └─ style.css         # 页面样式
-├─ tests/test_api.py    # API 和页面集成测试
+│  ├─ style.css         # 页面样式
+│  └─ favicon.svg       # 网站图标
+├─ tests/               # 按域拆分，公共夹具在 conftest.py
+│  ├─ conftest.py       # TestClient 工厂与登录辅助
+│  ├─ test_platform.py  # 健康检查、页面路由、错误响应、限流、安全响应头
+│  ├─ test_courses.py   # 课程增删改查、分页、配额
+│  ├─ test_files.py     # 上传、下载、预览、重复检测与配额
+│  ├─ test_search.py    # 搜索、筛选、排序与命中字段
+│  ├─ test_accounts.py  # 登录、会话、角色与自助改密
+│  ├─ test_trash.py     # 回收站（单条与批量）
+│  ├─ test_archive.py   # 打包下载
+│  ├─ test_batch.py     # 用户与资料批量操作
+│  ├─ test_audit.py     # 审计日志
+│  ├─ test_export.py    # CSV 导出
+│  ├─ test_ops.py       # 维护、备份、健康探针与启动维护
+│  └─ test_frontend_contract.py  # 前端 fetch 与后端路由一致性
 ├─ scripts/
 │  ├─ start.ps1         # Windows 启动脚本
 │  ├─ backup.ps1        # 备份脚本（调用 scripts/backup.py）
 │  ├─ backup.py         # 计划任务入口，等价于 py -m app.backup
 │  ├─ db_check.py       # 备份完整性校验
 │  └─ restore.ps1       # 备份校验和恢复
-├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest
+├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest（3.13 腿带覆盖率门槛）
 ├─ .env.example         # 环境配置示例
-├─ pyproject.toml       # 项目元数据、pytest 和 Ruff 配置
+├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ data/                # 本地 SQLite 数据库，不提交到 Git
 ├─ uploads/             # 上传文件，不提交到 Git
 └─ backups/             # 备份输出目录，不提交到 Git
@@ -123,9 +145,9 @@ py -m ruff check .
 py -m pytest -q
 ```
 
-测试覆盖健康检查、页面路由、课程创建、详情、分页、编辑和删除、资料上传、重复检测、元数据、清理、文件下载、搜索与筛选、预览、用户管理、上传配额和备份轮转，也覆盖统一错误响应和请求日志。
+测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 119 个用例，覆盖健康检查、页面路由与错误响应、限流、课程增删改查与分页、资料上传下载预览、重复检测、搜索与命中字段、登录会话与自助改密、回收站（含批量）、打包下载、批量操作、审计日志、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
-仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13 上先跑 `ruff check .` 再跑 `pytest -q`；推送或提交 PR 时自动执行。
+仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13 上先跑 `ruff check .` 再跑 `pytest`；其中 3.13 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
 
 ## 部署与运维
 
@@ -133,7 +155,7 @@ py -m pytest -q
 
 健康检查地址为 `/接口/健康`。响应会分别检查数据库完整性、上传目录可写性和磁盘剩余空间；任一检查失败时返回 HTTP 503。监控应同时关注 HTTP 状态码和响应中的 `checks` 字段。
 
-审计日志和登录失败记录按保留期自动清理，默认审计日志保留 90 天（`COURSEBOX_AUDIT_RETENTION_DAYS`）。除启动时清理外，也可以手动执行：
+审计日志、登录失败记录、过期会话与回收站按保留期自动清理（启动时清理一次），默认审计日志保留 90 天（`COURSEBOX_AUDIT_RETENTION_DAYS`）。也可以手动执行：
 
 ```powershell
 py -m app.maintenance
@@ -184,6 +206,16 @@ Linux/macOS 用 cron 每天 3 点执行，保留最近 7 组：
 ```
 
 备份目录建议放在另一块磁盘或同步到远端存储；只保留本机备份无法应对磁盘故障。
+
+## 已知局限
+
+这是一个面向单个班级 / 课程组的小站，下面这些取舍是**有意为之**，不是遗漏：
+
+- **只支持单实例部署。** 数据库是 SQLite（单写者），限流计数存在进程内存里。同时跑多个进程或实例时，每个实例各算各的限额，实际放行量会变成「实例数 × 配置额度」，SQLite 的并发写也会成为瓶颈。要水平扩展得先换掉这两处（外部数据库 + 共享的限流存储）。
+- **静态资源版本号按进程缓存。** `asset_version` 取资源内容哈希，进程内只算一次。因为结果只由文件内容决定，多实例算出来一致，这一项本身不影响多实例；只是换上新资源后要重启（或等进程重算）版本号才会更新。
+- **数据库迁移是手写的 `ALTER`。** 加列靠 `PRAGMA table_info` 判断后再补，当前结构版本记在 `PRAGMA user_version`（见 `app/db.py` 的 `SCHEMA_VERSION`）。没有引入 Alembic 之类的迁移框架，规模明显增长前够用。
+- **前端是单个 `app.js`。** 没有构建链、没有模块化——这是刻意的（不引入 node/npm 与 CDN，保证离线可用）。前后端接口的一致性由 `tests/test_frontend_contract.py` 兜底，代价是文件较长、阅读成本偏高。
+- **接口文档的中文化在 `app/main.py` 里做后处理。** 生成 OpenAPI 之后再替换中文标题，所以给模型改名时中文名会静默退回英文，且不会有测试报错。
 
 ## 截图
 

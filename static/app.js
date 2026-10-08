@@ -1607,7 +1607,7 @@ async function batchTrashAction(kind) {
   const body = JSON.stringify({ ids });
   try {
     // 两个分支各写一条 fetch：路径与方法都必须是字面量，
-    // 否则 tests/test_api.py 的前后端接口一致性测试扫不到这次调用。
+    // 否则 tests/test_frontend_contract.py 的前后端接口一致性测试扫不到这次调用。
     const response = restore
       ? await fetch("/api/trash/batch/restore", {
           method: "POST",
