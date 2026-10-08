@@ -103,6 +103,17 @@ const sessionsPanel = document.querySelector("#sessions-panel");
 const sessionsList = document.querySelector("#sessions-list");
 const hotList = document.querySelector("#hot-list");
 const recentList = document.querySelector("#recent-list");
+const commentDialog = document.querySelector("#comment-dialog");
+const commentTitle = document.querySelector("#comment-title");
+const commentList = document.querySelector("#comment-list");
+const commentForm = document.querySelector("#comment-form");
+const commentInput = document.querySelector("#comment-input");
+const commentMessage = document.querySelector("#comment-message");
+const commentHint = document.querySelector("#comment-hint");
+const commentClose = document.querySelector("#comment-close");
+// 评论弹层当前针对的资料编号，以及轮询定时器（非实时，用轮询刷新）。
+let commentFileId = null;
+let commentTimer = null;
 
 // 上传大小上限：默认 20 MB，登录后在课程页用后端配额里的 max_file_size 覆盖。
 // 不写死，避免管理员调过 COURSEBOX_MAX_FILE_SIZE 后前后端判断不一致。
@@ -814,6 +825,12 @@ function renderFiles(data, courseId) {
     actions.className = "file-actions";
     const preview = previewButton(file);
     if (preview) actions.append(preview);
+    const comment = document.createElement("button");
+    comment.type = "button";
+    comment.className = "text-button";
+    comment.textContent = `评论 ${file.comment_count || 0}`;
+    comment.addEventListener("click", () => openComments(file));
+    actions.append(comment);
     if (canManageFile(file)) {
       const edit = document.createElement("button");
       edit.type = "button";

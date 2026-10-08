@@ -431,3 +431,35 @@ class SessionInfo(BaseModel):
 
 class SessionList(BaseModel):
     items: list[SessionInfo]
+
+
+MAX_COMMENT_LENGTH = 2000
+
+
+class CommentCreate(BaseModel):
+    """发表评论。只收纯文本，前端用 textContent 渲染，不解析 HTML。"""
+
+    body: str = Field(..., min_length=1, max_length=MAX_COMMENT_LENGTH)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def body_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("评论必须是文本")
+        value = value.strip()
+        if not value:
+            raise ValueError("评论不能为空")
+        return value
+
+
+class Comment(BaseModel):
+    id: int
+    file_id: int
+    user_id: int
+    username: str
+    body: str
+    created_at: str
+
+
+class CommentPage(PageInfo):
+    items: list[Comment]

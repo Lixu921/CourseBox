@@ -103,6 +103,8 @@ def test_pages_are_available():
     assert 'id="upload-quota"' in course_page.text
     assert 'id="upload-results"' in course_page.text
     assert 'id="preview-dialog"' in course_page.text
+    assert 'id="comment-dialog"' in course_page.text
+    assert 'id="comment-list"' in course_page.text
     assert "multiple" in course_page.text
     assert 'href="#top"' in homepage.text
     assert 'href="#top"' in course_page.text

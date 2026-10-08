@@ -36,6 +36,8 @@ AuditAction = Literal[
     "rejected",
     # 导出 CSV 本身也要留痕，否则「谁把整库清单带走了」查不到。
     "export",
+    # 发表评论。
+    "comment",
 ]
 AuditEntity = Literal["course", "file", "user", "audit"]
 
@@ -55,6 +57,7 @@ ACTION_LABELS = {
     "approved": "审核通过",
     "rejected": "审核拒绝",
     "export": "导出",
+    "comment": "评论",
 }
 ENTITY_LABELS = {"course": "课程", "file": "资料", "user": "用户", "audit": "审计"}
 

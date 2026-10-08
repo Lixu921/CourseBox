@@ -609,8 +609,14 @@ function initAuth() {
   passwordForm?.addEventListener("submit", submitPasswordChange);
   previewClose?.addEventListener("click", closePreview);
   previewDialog?.querySelector("[data-preview-close]")?.addEventListener("click", closePreview);
+  commentClose?.addEventListener("click", closeComments);
+  commentDialog?.querySelector("[data-comment-close]")?.addEventListener("click", closeComments);
+  commentForm?.addEventListener("submit", submitComment);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closePreview();
+    if (event.key === "Escape") {
+      closePreview();
+      closeComments();
+    }
   });
 }
 

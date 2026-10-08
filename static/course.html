@@ -138,6 +138,27 @@
       <div id="preview-body" class="preview-body"></div>
     </div>
   </div>
+  <div id="comment-dialog" class="preview-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="comment-title">
+    <div class="preview-backdrop" data-comment-close></div>
+    <div class="preview-panel comment-panel">
+      <div class="preview-header">
+        <h2 id="comment-title">评论</h2>
+        <button id="comment-close" class="text-button" type="button">关闭</button>
+      </div>
+      <div class="comment-body">
+        <p id="comment-hint" class="form-hint" hidden></p>
+        <form id="comment-form" class="comment-form">
+          <label class="sr-only" for="comment-input">发表评论</label>
+          <textarea id="comment-input" maxlength="2000" rows="3" placeholder="说点什么…"></textarea>
+          <button id="comment-submit" class="primary-button compact-button" type="submit">发表</button>
+        </form>
+        <p id="comment-message" class="form-message" role="status" aria-live="polite"></p>
+        <ul id="comment-list" class="comment-list" aria-live="polite">
+          <li class="state-message">正在加载评论...</li>
+        </ul>
+      </div>
+    </div>
+  </div>
   <script src="/资源/脚本.js?v={{asset_version}}"></script>
   <script src="/资源/脚本2.js?v={{asset_version}}"></script>
   <script src="/资源/脚本3.js?v={{asset_version}}"></script>

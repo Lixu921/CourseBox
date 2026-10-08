@@ -284,7 +284,15 @@ def file_response(row: sqlite3.Row) -> dict:
         "size": row["size"],
         "upload_time": row["upload_time"],
     }
-    for key in ("mime_type", "sha256", "status", "uploaded_by", "version", "download_count"):
+    for key in (
+        "mime_type",
+        "sha256",
+        "status",
+        "uploaded_by",
+        "version",
+        "download_count",
+        "comment_count",
+    ):
         if key in row.keys():
             result[key] = row[key]
     return result
@@ -477,7 +485,9 @@ def list_course_files(
     rows = db.execute(
         f"""
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by, version, download_count
+               mime_type, sha256, status, uploaded_by, version, download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = f.id)
+                   AS comment_count
         FROM files AS f WHERE f.course_id = ? AND {visibility}
         ORDER BY id DESC LIMIT ? OFFSET ?
         """,  # noqa: S608 - 可见性片段来自内部常量
@@ -720,7 +730,9 @@ async def upload_course_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by, version, download_count
+               mime_type, sha256, status, uploaded_by, version, download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = files.id)
+                   AS comment_count
         FROM files WHERE id = ?
         """,
         (cursor.lastrowid,),
@@ -775,7 +787,9 @@ def update_file(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by, version, download_count
+               mime_type, sha256, status, uploaded_by, version, download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = files.id)
+                   AS comment_count
         FROM files WHERE id = ?
         """,
         (file_id,),
@@ -1097,6 +1111,8 @@ def list_my_files(
         SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
                f.mime_type, f.sha256, f.status, f.uploaded_by, f.version,
                f.download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = f.id)
+                   AS comment_count,
                c.name AS course_name, c.college, c.semester, f.filename
         FROM files AS f JOIN courses AS c ON c.id = f.course_id
         WHERE {where}
@@ -1172,6 +1188,8 @@ def search_files(
                 f"""
                 SELECT f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
                        f.mime_type, f.sha256, f.status, f.version, f.download_count,
+                       (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = f.id)
+                           AS comment_count,
                        c.name AS course_name, c.college, c.semester, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
                 WHERE {visibility} AND ({clause})
@@ -1222,7 +1240,9 @@ def apply_file_review(
     row = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by, version, download_count
+               mime_type, sha256, status, uploaded_by, version, download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = files.id)
+                   AS comment_count
         FROM files WHERE id = ?
         """,
         (file_id,),
@@ -1510,7 +1530,9 @@ def restore_trashed_file(
     restored = db.execute(
         """
         SELECT id, course_id, title, original_name, size, upload_time,
-               mime_type, sha256, status, uploaded_by, version, download_count
+               mime_type, sha256, status, uploaded_by, version, download_count,
+               (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = files.id)
+                   AS comment_count
         FROM files WHERE id = ?
         """,
         (file_id,),

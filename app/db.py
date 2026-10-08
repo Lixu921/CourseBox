@@ -30,7 +30,8 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v6 courses 补 tags（逗号分隔的分类标签）
 #   v7 新增 share_links（只读分享链接）
 #   v8 files 补 download_count（下载计数）；sessions 补 user_agent / ip（登录设备）
-SCHEMA_VERSION = 8
+#   v9 新增 comments（资料评论）
+SCHEMA_VERSION = 9
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -126,6 +127,16 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
                 FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             );
+
+            CREATE TABLE IF NOT EXISTS comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
         migrate_schema(connection)
@@ -138,6 +149,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
             CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON files(uploaded_by);
             CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_comments_file_id ON comments(file_id);
             -- 列表与搜索默认按上传时间、大小排序，加索引避免全表 filesort。
             CREATE INDEX IF NOT EXISTS idx_files_upload_time ON files(upload_time);
             CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);

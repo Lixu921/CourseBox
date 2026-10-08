@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
 from app.api.auth import set_session_cookie
+from app.api.comments import router as comments_router
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router, trash_router
 from app.api.files import router as files_router
@@ -126,6 +127,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(courses_router)
+app.include_router(comments_router)
 app.include_router(files_router)
 app.include_router(download_router)
 app.include_router(search_router)
@@ -807,6 +809,9 @@ OPENAPI_SCHEMA_TITLES = {
     "Overview": "站点概览",
     "SessionInfo": "登录会话",
     "SessionList": "登录会话列表",
+    "Comment": "评论",
+    "CommentCreate": "发表评论请求",
+    "CommentPage": "评论分页响应",
     "HTTPValidationError": "请求校验错误",
     "ValidationError": "字段校验错误",
 }
@@ -862,6 +867,8 @@ OPENAPI_PROPERTY_TITLES = {
     "user_remaining": "我的剩余",
     "disk_free": "磁盘剩余",
     "download_count": "下载次数",
+    "comment_count": "评论数",
+    "body": "评论内容",
     "current": "当前设备",
     "user_agent": "浏览器标识",
     "ip": "来源 IP",

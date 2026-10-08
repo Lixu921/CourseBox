@@ -554,3 +554,141 @@ function userQuery(page) {
   return params;
 }
 
+// 资料评论：弹层里展示 + 发表 + 删除，打开期间每 4 秒轮询一次（非实时）。
+function openComments(file) {
+  if (!commentDialog) return;
+  commentFileId = file.id;
+  commentTitle.textContent = `评论 · ${file.title}`;
+  commentMessage.textContent = "";
+  commentMessage.className = "form-message";
+  if (currentUser) {
+    commentForm.hidden = false;
+    commentHint.hidden = true;
+  } else {
+    commentForm.hidden = true;
+    commentHint.hidden = false;
+    commentHint.textContent = "登录后即可发表评论。";
+  }
+  commentList.innerHTML = "";
+  commentDialog.hidden = false;
+  document.body.classList.add("preview-open");
+  commentClose?.focus();
+  loadComments();
+  startCommentPolling();
+}
+
+function closeComments() {
+  if (!commentDialog || commentDialog.hidden) return;
+  commentDialog.hidden = true;
+  document.body.classList.remove("preview-open");
+  stopCommentPolling();
+  commentFileId = null;
+}
+
+function startCommentPolling() {
+  stopCommentPolling();
+  commentTimer = window.setInterval(() => {
+    if (commentFileId != null) loadComments();
+  }, 4000);
+}
+
+function stopCommentPolling() {
+  if (commentTimer) {
+    window.clearInterval(commentTimer);
+    commentTimer = null;
+  }
+}
+
+function refreshCourseFileCounts() {
+  if (currentCourseId) loadCourseFiles(currentCourseId, currentFilePage);
+}
+
+async function loadComments() {
+  if (!commentList || commentFileId == null) return;
+  try {
+    const response = await fetch(
+      `/api/files/${encodeURIComponent(commentFileId)}/comments?page_size=50`
+    );
+    if (!response.ok) throw new Error(await readError(response, "评论加载失败。"));
+    renderComments((await response.json()).items || []);
+  } catch (error) {
+    showState(commentList, error.message || "评论加载失败。", true);
+  }
+}
+
+function renderComments(items) {
+  commentList.innerHTML = "";
+  if (!items.length) {
+    showState(commentList, "还没有评论，来发第一条吧。");
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("li");
+    row.className = "comment-row";
+    const head = document.createElement("div");
+    head.className = "comment-head";
+    const who = document.createElement("strong");
+    who.textContent = item.username;
+    const when = document.createElement("span");
+    when.className = "muted";
+    when.textContent = formatDateTime(item.created_at) || item.created_at;
+    head.append(who, when);
+    if (currentUser && (currentUser.role === "admin" || currentUser.id === item.user_id)) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "text-button danger-button";
+      remove.textContent = "删除";
+      remove.addEventListener("click", () => deleteComment(item.id));
+      head.append(remove);
+    }
+    const body = document.createElement("p");
+    body.className = "comment-text";
+    body.textContent = item.body;
+    row.append(head, body);
+    commentList.append(row);
+  });
+}
+
+async function submitComment(event) {
+  event.preventDefault();
+  if (commentFileId == null) return;
+  const body = commentInput.value.trim();
+  if (!body) {
+    commentMessage.textContent = "评论不能为空。";
+    commentMessage.className = "form-message error-message";
+    return;
+  }
+  try {
+    const response = await fetch(
+      `/api/files/${encodeURIComponent(commentFileId)}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      }
+    );
+    if (!response.ok) throw new Error(await readError(response, "发表失败。"));
+    commentInput.value = "";
+    commentMessage.textContent = "";
+    commentMessage.className = "form-message";
+    await loadComments();
+    refreshCourseFileCounts();
+  } catch (error) {
+    commentMessage.textContent = error.message || "发表失败。";
+    commentMessage.className = "form-message error-message";
+  }
+}
+
+async function deleteComment(commentId) {
+  if (!window.confirm("确定删除这条评论吗？")) return;
+  const response = await fetch(`/api/comments/${encodeURIComponent(commentId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    window.alert(await readError(response, "删除失败。"));
+    return;
+  }
+  await loadComments();
+  refreshCourseFileCounts();
+}
+

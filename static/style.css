@@ -657,3 +657,63 @@ body.preview-open { overflow: hidden; }
 .overview-row strong {
   color: #1f2937;
 }
+
+/* 资料评论弹层：复用预览弹层的容器样式。 */
+.comment-panel {
+  max-width: 640px;
+}
+
+.comment-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.comment-form textarea {
+  min-height: 4rem;
+  padding: 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.comment-list {
+  display: grid;
+  gap: 0.6rem;
+  max-height: 45vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.comment-row {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.comment-head .text-button {
+  margin-left: auto;
+}
+
+.comment-text {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
