@@ -586,3 +586,47 @@ def test_rate_limit_ignores_forwarded_for_by_default(monkeypatch):
         client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.2"}).status_code
         == 429
     )
+
+
+def _count_health_checks(monkeypatch, tmp_path) -> list[int]:
+    import app.main as main_module
+
+    calls: list[int] = []
+    real = main_module.check_database
+    monkeypatch.setattr(
+        main_module, "check_database", lambda: (calls.append(1), real())[1]
+    )
+    return calls
+
+
+def test_health_check_is_cached(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_HEALTH_CACHE_SECONDS", "30")
+
+    from app.db import init_db
+
+    init_db()
+    calls = _count_health_checks(monkeypatch, tmp_path)
+    client = create_client()
+
+    assert client.get("/接口/健康").status_code == 200
+    assert client.get("/接口/健康").status_code == 200
+    # 第二次命中缓存，不再真查数据库。
+    assert len(calls) == 1
+
+
+def test_health_cache_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_HEALTH_CACHE_SECONDS", "0")
+
+    from app.db import init_db
+
+    init_db()
+    calls = _count_health_checks(monkeypatch, tmp_path)
+    client = create_client()
+
+    client.get("/接口/健康")
+    client.get("/接口/健康")
+    assert len(calls) == 2

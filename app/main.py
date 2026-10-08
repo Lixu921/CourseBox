@@ -30,6 +30,7 @@ from app.config import database_path, get_settings, uploads_path
 from app.db import (
     HEALTH_PROBE_PREFIX,
     LOGIN_ATTEMPT_RETENTION_SECONDS,
+    checkpoint_wal,
     cleanup_health_probes,
     cleanup_staged_files,
     get_db,
@@ -96,6 +97,8 @@ def run_startup_maintenance() -> None:
         purge_login_attempts(connection, LOGIN_ATTEMPT_RETENTION_SECONDS)
         # 过期会话只在这里和 py -m app.maintenance 里清理，不挂在读请求上。
         purge_expired_sessions(connection)
+        # 顺手做一次 WAL 合并，避免 -wal 文件随写入只涨不落。
+        checkpoint_wal(connection)
         # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
         # （py -m app.maintenance）覆盖长期不重启的部署。
         purge_deleted_files(connection, settings.trash_retention_days)
@@ -536,13 +539,18 @@ def course_page():
     return render_page("course.html")
 
 
-@app.get("/api/health", include_in_schema=False)
-@app.get(
-    "/接口/健康",
-    summary="健康检查",
-    operation_id="健康检查",
-)
-def health_check():
+# 健康检查结果缓存。key 由库路径、上传目录、磁盘下限组成——测试与运行时常 monkeypatch
+# 这些配置，用它们做 key 能保证换了配置就重新体检，而不是命中上一组配置的缓存。
+_health_cache: dict[tuple[str, str, int], tuple[float, dict, int]] = {}
+
+
+def reset_health_cache() -> None:
+    """清空健康检查缓存。测试用例开始前调用，避免互相污染。"""
+
+    _health_cache.clear()
+
+
+def run_health_checks() -> tuple[dict, int]:
     checks = {
         "database": check_database(),
         "uploads": check_uploads_directory(),
@@ -558,8 +566,36 @@ def health_check():
         "状态": "正常" if healthy else "异常",
         "文档": "/接口文档",
     }
-    if not healthy:
-        return JSONResponse(status_code=503, content=result)
+    return result, 200 if healthy else 503
+
+
+@app.get("/api/health", include_in_schema=False)
+@app.get(
+    "/接口/健康",
+    summary="健康检查",
+    operation_id="健康检查",
+)
+def health_check():
+    settings = get_settings()
+    key = (
+        str(settings.database_path),
+        str(settings.uploads_path),
+        settings.min_free_space,
+    )
+    ttl = settings.health_cache_seconds
+    if ttl > 0:
+        cached = _health_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < ttl:
+            result, status_code = cached[1], cached[2]
+            if status_code != 200:
+                return JSONResponse(status_code=status_code, content=result)
+            return result
+
+    result, status_code = run_health_checks()
+    if ttl > 0:
+        _health_cache[key] = (time.monotonic(), result, status_code)
+    if status_code != 200:
+        return JSONResponse(status_code=status_code, content=result)
     return result
 
 

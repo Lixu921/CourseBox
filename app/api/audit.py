@@ -137,12 +137,21 @@ def list_audit_logs(
     对象: AuditEntity | None = Query(None, description="按对象类型筛选"),
     起始时间: str | None = Query(None, description="不早于该日期（YYYY-MM-DD）"),
     结束时间: str | None = Query(None, description="不晚于该日期（YYYY-MM-DD）"),
+    游标: int | None = Query(
+        None, ge=1, description="只返回编号小于该值的记录（游标分页，避免翻页时跳条）"
+    ),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     user: sqlite3.Row = Depends(require_roles("admin")),
     db: sqlite3.Connection = Depends(get_db),
 ) -> AuditLogPage:
     where, params = build_audit_filter(关键词, 动作, 对象, 起始时间, 结束时间)
+    # 游标分页：审计是持续追加的表，按 offset 翻页会在新增记录时跳条/重复。传游标时
+    # 改成「取编号小于游标的记录」，客户端把上一页最后一条的 id 作为下一页游标即可。
+    if 游标 is not None:
+        where = f"{where} AND a.id < ?" if where else "WHERE a.id < ?"
+        params.append(游标)
+    offset = 0 if 游标 is not None else (page - 1) * page_size
     # 操作人可能已被删除（actor_id 会被置为 NULL），所以用 LEFT JOIN。
     join = "LEFT JOIN users AS u ON u.id = a.actor_id"
 
@@ -156,7 +165,7 @@ def list_audit_logs(
         FROM audit_logs AS a {join} {where}
         ORDER BY a.id DESC LIMIT ? OFFSET ?
         """,  # noqa: S608 - 条件由内部白名单拼接
-        (*params, page_size, (page - 1) * page_size),
+        (*params, page_size, offset),
     ).fetchall()
     return AuditLogPage(
         **page_response([audit_response(row) for row in rows], total, page, page_size)

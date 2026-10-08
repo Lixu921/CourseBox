@@ -81,6 +81,8 @@ CourseBox/
 ├─ TASKBOOK.md          # 开工时的原始任务书（正文属历史，见其中的「现状注记」）
 ├─ TASKBOOK_OPTIMIZATION.md  # 各轮优化的完成记录
 ├─ TASKBOOK_ROUND7.md   # 第七轮（复审加固）任务书
+├─ TASKBOOK_ROUND8.md   # 第八轮（运行期整洁）任务书
+├─ TASKBOOK_ROUND9.md   # 第九轮（健康检查缓存与审计游标）任务书
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ render.yaml          # Render 部署配置
 ├─ requirements.txt     # 运行时依赖
@@ -121,7 +123,7 @@ $env:COURSEBOX_UPLOAD_DIR = "uploads"
 $env:COURSEBOX_ADMIN_PASSWORD = "请替换为至少 8 位密码"
 ```
 
-支持的主要配置包括数据库路径、上传目录、单文件大小、请求体上限、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。前面有反向代理时设 `COURSEBOX_TRUST_PROXY=true`，让限流与登录锁定按 `X-Forwarded-For` 区分访客；生产环境可用 `COURSEBOX_ENABLE_DOCS=false` 关闭接口文档。完整列表见 `.env.example`。
+支持的主要配置包括数据库路径、上传目录、单文件大小、请求体上限、健康检查缓存秒数、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。前面有反向代理时设 `COURSEBOX_TRUST_PROXY=true`，让限流与登录锁定按 `X-Forwarded-For` 区分访客；生产环境可用 `COURSEBOX_ENABLE_DOCS=false` 关闭接口文档。完整列表见 `.env.example`。
 
 ## 启动项目
 
@@ -154,7 +156,7 @@ Windows 也可以使用启动脚本：
 
 首页在未登录时会显示一条访客提示，说明登录后可以上传资料、查看「我的上传」，管理员登录后还能管理用户。资料上传、审核状态查看与用户管理面板都是登录后才出现的，未登录访客只会看到课程浏览与搜索筛选。
 
-所有 API 错误使用统一结构：`error.code` 为机器可读错误码，`error.message` 为中文提示，`error.request_id` 可用于查询日志。为兼容旧客户端，顶层 `detail` 字段仍保留。
+所有 API 错误使用统一结构：`error.code` 为机器可读错误码，`error.message` 为中文提示，`error.request_id` 可用于查询日志。为兼容旧客户端，顶层 `detail` 字段仍保留。审计列表（`/接口/审计`）除 `page`/`page_size` 外还支持 `游标`：传入上一页最后一条的编号，取编号更小的记录，避免持续写入时按 offset 翻页跳条或重复。
 
 数据库默认保存为 `data/coursebox.db`，也可以通过 `COURSEBOX_DB` 环境变量指定其他 SQLite 文件路径。上传目录可通过 `COURSEBOX_UPLOAD_DIR` 配置，单文件大小可通过 `COURSEBOX_MAX_FILE_SIZE` 配置，允许扩展名可通过逗号分隔的 `COURSEBOX_ALLOWED_EXTENSIONS` 配置。
 
@@ -165,7 +167,7 @@ py -m ruff check .
 py -m pytest -q
 ```
 
-测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 133 个用例，覆盖健康检查、页面路由与错误响应、限流、接口文档 CSP、请求体上限、课程增删改查与分页、资料上传下载预览、重复检测、搜索与命中字段、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
+测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 139 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、限流、接口文档 CSP、请求体上限、课程增删改查与分页、资料上传下载预览、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
 仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
 

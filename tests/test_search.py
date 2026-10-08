@@ -1,4 +1,4 @@
-from conftest import create_client, login_admin
+from conftest import create_client, login_admin, login_user
 
 
 def searchable_client(tmp_path, monkeypatch):
@@ -327,3 +327,43 @@ def test_search_sort_accepts_chinese_aliases(tmp_path, monkeypatch):
 
     # 白名单之外的值依然拒绝。
     assert client.get("/接口/搜索", params={"排序": "最大"}).status_code == 422
+
+
+def test_search_visibility_matches_course_list(tmp_path, monkeypatch):
+    """搜索要和课程资料列表用同一套可见性：上传者能搜到自己的待审资料。
+
+    否则用户传完资料，在列表里看得到、搜索却搜不到，会以为上传丢了。
+    """
+
+    client, course_id = searchable_client(tmp_path, monkeypatch)
+    assert client.post(
+        "/接口/用户",
+        json={"username": "pendinguser", "password": "pending-pass", "role": "uploader"},
+    ).status_code == 201
+
+    uploader = create_client()
+    login_user(uploader, "pendinguser", "pending-pass")
+    pending = uploader.post(
+        f"/接口/课程/{course_id}/资料",
+        data={"title": "待审专用词"},
+        files={"file": ("pending.pdf", b"x", "application/pdf")},
+    )
+    assert pending.status_code == 201
+    assert pending.json()["status"] == "pending"
+
+    # 匿名只在已通过里找，搜不到待审。
+    assert (
+        create_client().get("/接口/搜索", params={"q": "待审专用词"}).json()["total"] == 0
+    )
+    # 上传者本人与管理员都能搜到待审。
+    assert uploader.get("/接口/搜索", params={"q": "待审专用词"}).json()["total"] == 1
+    assert client.get("/接口/搜索", params={"q": "待审专用词"}).json()["total"] == 1
+
+    # 别的上传者依然看不到。
+    other = create_client()
+    client.post(
+        "/接口/用户",
+        json={"username": "otheruser", "password": "other-pass", "role": "uploader"},
+    )
+    login_user(other, "otheruser", "other-pass")
+    assert other.get("/接口/搜索", params={"q": "待审专用词"}).json()["total"] == 0

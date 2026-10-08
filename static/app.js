@@ -478,6 +478,10 @@ function searchResultCard(file, query) {
   card.className = "search-result-card";
   const title = document.createElement("h3");
   title.append(highlight(file.title, query));
+  // 搜索对上传者也会返回自己的待审资料，标出状态，避免与已通过的混淆。
+  if (file.status && file.status !== "approved") {
+    title.append(statusBadge(file.status));
+  }
   const metadata = document.createElement("p");
   metadata.className = "course-meta";
   metadata.append(highlight(file.original_name, query));

@@ -14,15 +14,17 @@ import re
 from fastapi.testclient import TestClient
 
 from app.db import reset_initialized_databases
-from app.main import app
+from app.main import app, reset_health_cache
 from app.ratelimit import reset_rate_limits
 
 
 def create_client() -> TestClient:
     # 限流按客户端 IP 计数，而所有测试都来自同一个 TestClient 主机；
-    # 建表缓存按数据库路径记忆。两者都清空，测试之间才不会互相影响。
+    # 建表缓存按数据库路径记忆。两者都要清空，测试之间才不会互相影响。
+    # 健康检查结果也带缓存，不清会让「改了上传目录」的用例读到上一组结果。
     reset_rate_limits()
     reset_initialized_databases()
+    reset_health_cache()
     return TestClient(app)
 
 

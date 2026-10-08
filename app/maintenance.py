@@ -8,6 +8,7 @@ import sqlite3
 from app.config import database_path, get_settings
 from app.db import (
     LOGIN_ATTEMPT_RETENTION_SECONDS,
+    checkpoint_wal,
     init_db,
     purge_audit_logs,
     purge_deleted_files,
@@ -29,6 +30,8 @@ def run() -> tuple[int, int, int, int]:
         removed_sessions = purge_expired_sessions(connection)
         # 回收站里的资料到期后在这里真正从磁盘删除。
         removed_trash = purge_deleted_files(connection, settings.trash_retention_days)
+        # 最后合并并截断 WAL，避免长跑实例的 -wal 文件只涨不落。
+        checkpoint_wal(connection)
     finally:
         connection.close()
     return removed_audit, removed_attempts, removed_sessions, removed_trash

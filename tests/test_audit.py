@@ -174,3 +174,81 @@ def test_audit_log_listing_for_admins(tmp_path, monkeypatch):
     viewer = create_client()
     login_user(viewer, "viewer1", "viewer12345")
     assert viewer.get("/接口/审计").status_code == 403
+
+
+def test_anonymous_download_is_not_audited(tmp_path, monkeypatch):
+    """公开下载不写审计：否则任何人都能用匿名下载把 audit_logs 刷爆。"""
+
+    import sqlite3
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "Public Course"}).json()
+    uploaded = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "Public Doc"},
+        files={"file": ("public.txt", b"hi", "text/plain")},
+    ).json()
+    file_id = uploaded["id"]
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    connection.execute("DELETE FROM audit_logs")
+    connection.commit()
+
+    anonymous = create_client()
+    assert anonymous.get(f"/接口/资料/{file_id}/下载").status_code == 200
+    assert anonymous.get(f"/接口/资料/{file_id}/下载").status_code == 200
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'download'"
+        ).fetchone()[0]
+        == 0
+    )
+
+    # 登录用户下载仍然留痕。
+    assert client.get(f"/接口/资料/{file_id}/下载").status_code == 200
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action = 'download'"
+        ).fetchone()[0]
+        == 1
+    )
+    connection.close()
+
+
+def test_audit_cursor_pagination(tmp_path, monkeypatch):
+    """审计用游标分页：按 offset 翻页会在持续写入时跳条/重复。"""
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    for index in range(4):
+        client.post("/接口/课程", json={"name": f"课程{index}"})
+
+    first = client.get("/接口/审计", params={"page_size": 2}).json()
+    first_ids = [item["id"] for item in first["items"]]
+    assert len(first_ids) == 2
+    cursor = first_ids[-1]
+
+    second = client.get(
+        "/接口/审计", params={"page_size": 2, "游标": cursor}
+    ).json()
+    second_ids = [item["id"] for item in second["items"]]
+    assert second_ids
+    # 第二页全部严格小于游标，且与第一页没有交集。
+    assert all(item_id < cursor for item_id in second_ids)
+    assert set(first_ids).isdisjoint(second_ids)
+
+    # 游标必须是正整数。
+    assert client.get("/接口/审计", params={"游标": 0}).status_code == 422

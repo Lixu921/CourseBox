@@ -254,3 +254,31 @@ def test_maintenance_purges_expired_sessions(tmp_path, monkeypatch, capsys):
 
     assert maintenance.main() == 0
     assert "过期会话已清理 1 条" in capsys.readouterr().out
+
+
+def test_checkpoint_wal_runs_without_error(tmp_path, monkeypatch):
+    """维护任务会合并并截断 WAL，长跑实例的 -wal 文件不至于只涨不落。"""
+
+    import sqlite3
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import checkpoint_wal, configure_connection, init_db
+
+    init_db()
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    connection.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES ('u', 'x', 'viewer')"
+    )
+    connection.commit()
+
+    checkpoint_wal(connection)
+    # 收尾后连接仍然可用，数据没有丢。
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM users WHERE username = 'u'"
+        ).fetchone()[0]
+        == 1
+    )
+    connection.close()

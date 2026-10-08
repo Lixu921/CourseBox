@@ -372,6 +372,17 @@ def purge_expired_sessions(connection: sqlite3.Connection) -> int:
     return cursor.rowcount or 0
 
 
+def checkpoint_wal(connection: sqlite3.Connection) -> None:
+    """把 WAL 日志合并回主库并截断，避免长跑实例下 -wal 文件只涨不落。
+
+    TRUNCATE 模式在有其他读者时会退化成不截断而不是报错，因此放在维护任务里定期
+    执行即可，不追求每次都能截断。
+    """
+
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    connection.commit()
+
+
 def purge_login_attempts(connection: sqlite3.Connection, keep_seconds: int) -> int:
     """清理已解锁且长期未活动的登录记录，避免表无限增长。"""
 

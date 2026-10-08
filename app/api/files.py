@@ -768,8 +768,11 @@ def download_file(
         raise HTTPException(status_code=404, detail="文件不存在")
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    record_audit(db, user["id"] if user else None, "download", "file", file_id)
-    db.commit()
+    # 下载是公开接口，匿名请求不写审计：否则任何人都能用匿名下载把 audit_logs
+    # 刷爆，并在 SQLite 的单写者上制造大量无意义的写锁竞争。
+    if user is not None:
+        record_audit(db, user["id"], "download", "file", file_id)
+        db.commit()
     return FileResponse(
         path,
         filename=row["original_name"],
@@ -827,8 +830,10 @@ def preview_file(
     }
     if media_type.startswith("text/"):
         headers["Content-Security-Policy"] = "default-src 'none'"
-    record_audit(db, user["id"] if user else None, "preview", "file", file_id)
-    db.commit()
+    # 与下载同理：预览也是公开接口，匿名请求不落审计。
+    if user is not None:
+        record_audit(db, user["id"], "preview", "file", file_id)
+        db.commit()
     return FileResponse(
         path,
         media_type=media_type,
@@ -937,15 +942,17 @@ def download_course_archive(
         raise HTTPException(status_code=404, detail="资料文件已丢失，无法打包")
 
     course = db.execute("SELECT name FROM courses WHERE id = ?", (course_id,)).fetchone()
-    record_audit(
-        db,
-        user["id"] if user else None,
-        "download",
-        "course",
-        course_id,
-        f"打包下载 {packed} 份资料",
-    )
-    db.commit()
+    # 打包下载同样是公开接口，匿名请求不写审计。
+    if user is not None:
+        record_audit(
+            db,
+            user["id"],
+            "download",
+            "course",
+            course_id,
+            f"打包下载 {packed} 份资料",
+        )
+        db.commit()
     return FileResponse(
         archive_path,
         filename=archive_filename(course["name"] if course else ""),
@@ -1021,6 +1028,7 @@ def search_files(
     ),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    user: sqlite3.Row | None = Depends(optional_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FilePage:
     keyword = (关键词 or request.query_params.get("q", "")).strip()
@@ -1036,6 +1044,9 @@ def search_files(
         return FilePage(**page_response([], 0, page, page_size))
 
     order = SORT_OPTIONS[SORT_ALIASES.get(排序, 排序)]
+    # 搜索与课程资料列表用同一套可见性：管理员看全部、上传者额外看到自己待审的、
+    # 其他人和访客只看已通过的。否则上传者传完资料却在搜索里找不到，会以为传丢了。
+    visibility, visibility_params = file_visibility(user)
     total = 0
     rows: list[sqlite3.Row] = []
     for use_fts in ((True, False) if keyword else (False,)):
@@ -1044,12 +1055,12 @@ def search_files(
             clause for clause in (keyword_clause, *extra_clauses) if clause
         ]
         clause = " AND ".join(conditions) if conditions else "1 = 1"
-        params: list[object] = [*keyword_params, *extra_params]
+        params: list[object] = [*visibility_params, *keyword_params, *extra_params]
         try:
             total = db.execute(
                 "SELECT COUNT(*) FROM files AS f "  # noqa: S608 - 条件由内部函数生成
                 "JOIN courses AS c ON c.id = f.course_id "
-                f"WHERE f.status = 'approved' AND f.deleted_at IS NULL AND ({clause})",
+                f"WHERE {visibility} AND ({clause})",
                 params,
             ).fetchone()[0]
             rows = db.execute(
@@ -1058,7 +1069,7 @@ def search_files(
                        f.mime_type, f.sha256, f.status,
                        c.name AS course_name, c.college, c.semester, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
-                WHERE f.status = 'approved' AND f.deleted_at IS NULL AND ({clause})
+                WHERE {visibility} AND ({clause})
                 ORDER BY {order} LIMIT ? OFFSET ?
                 """,  # noqa: S608 - 条件与排序都来自内部白名单
                 (*params, page_size, (page - 1) * page_size),

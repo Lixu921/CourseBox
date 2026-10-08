@@ -39,6 +39,9 @@ DEFAULT_TRUST_PROXY = False
 DEFAULT_ENABLE_DOCS = True
 # 请求体上限相对单文件上限预留的余量：正文是 multipart，除文件本身还有边界与表单字段。
 DEFAULT_REQUEST_OVERHEAD = 1024 * 1024
+# 健康检查结果缓存秒数。监控高频轮询时，避免每次都新开连接跑一遍 PRAGMA quick_check；
+# 0 表示不缓存（每次请求都真查）。
+DEFAULT_HEALTH_CACHE_SECONDS = 10
 
 logger = logging.getLogger("coursebox.config")
 
@@ -227,6 +230,7 @@ class Settings:
     trust_proxy: bool
     enable_docs: bool
     max_request_bytes: int
+    health_cache_seconds: int
 
     @property
     def is_production(self) -> bool:
@@ -293,5 +297,9 @@ def get_settings() -> Settings:
         max_request_bytes=_positive_int(
             "COURSEBOX_MAX_REQUEST_BYTES",
             max_file_size + DEFAULT_REQUEST_OVERHEAD,
+        ),
+        # 0 表示关闭缓存；非法值回退默认。复用「非负整数」解析。
+        health_cache_seconds=_quota_bytes(
+            "COURSEBOX_HEALTH_CACHE_SECONDS", DEFAULT_HEALTH_CACHE_SECONDS
         ),
     )
