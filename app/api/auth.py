@@ -24,7 +24,7 @@ from app.db import (
 )
 from app.ratelimit import account_rate_limiter
 from app.ratelimit import client_ip as resolve_client_ip
-from app.schemas import LoginRequest, PasswordChange, User
+from app.schemas import LoginRequest, PasswordChange, SessionInfo, SessionList, User
 
 router = APIRouter(tags=["账户"])
 
@@ -203,9 +203,11 @@ def login(
 
     clear_login_failures(db, username, client_ip)
     token, token_hash, expires_at = new_session_token()
+    user_agent = (request.headers.get("user-agent") or "").strip()[:200] or None
     db.execute(
-        "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
-        (row["id"], token_hash, expires_at),
+        "INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, ip) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (row["id"], token_hash, expires_at, user_agent, client_ip),
     )
     record_audit(db, row["id"], "login", "user", row["id"], "用户登录")
     db.commit()
@@ -304,3 +306,65 @@ def logout(
         record_audit(db, user["id"], "logout", "user", user["id"], "用户退出登录")
     db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
+
+
+@router.get(
+    "/api/my-sessions",
+    include_in_schema=False,
+)
+@router.get(
+    "/接口/我的会话",
+    response_model=SessionList,
+    summary="查看登录设备",
+    operation_id="查看登录设备",
+)
+def list_my_sessions(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    user: sqlite3.Row = Depends(current_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> SessionList:
+    current_hash = session_token_hash(session_cookie) if session_cookie else ""
+    rows = db.execute(
+        "SELECT id, created_at, expires_at, user_agent, ip, token_hash "
+        "FROM sessions WHERE user_id = ? ORDER BY id DESC",
+        (user["id"],),
+    ).fetchall()
+    return SessionList(
+        items=[
+            SessionInfo(
+                id=row["id"],
+                created_at=row["created_at"],
+                expires_at=row["expires_at"],
+                user_agent=row["user_agent"],
+                ip=row["ip"],
+                current=row["token_hash"] == current_hash,
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.delete(
+    "/api/my-sessions/{session_id}",
+    include_in_schema=False,
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@router.delete(
+    "/接口/我的会话/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="退出指定设备",
+    operation_id="退出指定设备",
+)
+def revoke_my_session(
+    session_id: int,
+    user: sqlite3.Row = Depends(current_user),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    row = db.execute(
+        "SELECT user_id FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if row is None or row["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    record_audit(db, user["id"], "logout", "user", user["id"], "撤销登录设备")
+    db.commit()

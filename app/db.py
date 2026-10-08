@@ -29,7 +29,8 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v5 courses / files 补 version（编辑乐观锁）
 #   v6 courses 补 tags（逗号分隔的分类标签）
 #   v7 新增 share_links（只读分享链接）
-SCHEMA_VERSION = 7
+#   v8 files 补 download_count（下载计数）；sessions 补 user_agent / ip（登录设备）
+SCHEMA_VERSION = 8
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -65,6 +66,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 status TEXT NOT NULL DEFAULT 'approved',
                 uploaded_by INTEGER,
                 version INTEGER NOT NULL DEFAULT 1,
+                download_count INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
             );
 
@@ -82,6 +84,8 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 token_hash TEXT NOT NULL UNIQUE,
                 expires_at TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                user_agent TEXT,
+                ip TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
@@ -221,6 +225,7 @@ def migrate_schema(connection: sqlite3.Connection) -> None:
     migrate_files_table(connection)
     migrate_users_table(connection)
     migrate_courses_table(connection)
+    migrate_sessions_table(connection)
     # PRAGMA 不支持占位符参数，只能拼进语句；值来自本模块的整数常量，不含外部输入。
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")  # noqa: S608
 
@@ -241,6 +246,10 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
         "deleted_by": "ALTER TABLE files ADD COLUMN deleted_by INTEGER",
         # 编辑乐观锁：每次修改 +1，客户端带上自己看到的版本号，冲突就报 409。
         "version": "ALTER TABLE files ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+        # 下载计数：热门榜用；删除回收站不影响，恢复后保留。
+        "download_count": (
+            "ALTER TABLE files ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0"
+        ),
     }
     for column, statement in migrations.items():
         if column not in columns:
@@ -259,6 +268,18 @@ def migrate_courses_table(connection: sqlite3.Connection) -> None:
         )
     if "tags" not in columns:
         connection.execute("ALTER TABLE courses ADD COLUMN tags TEXT")
+
+
+def migrate_sessions_table(connection: sqlite3.Connection) -> None:
+    """老库的 sessions 补上设备信息列（user_agent / ip），历史会话留空。"""
+
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "user_agent" not in columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
+    if "ip" not in columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN ip TEXT")
 
 
 def migrate_users_table(connection: sqlite3.Connection) -> None:

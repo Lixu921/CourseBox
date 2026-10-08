@@ -615,6 +615,8 @@ function initAuth() {
 }
 
 function initHomePage() {
+  // 热门 / 最新是公开内容，进首页就加载。
+  loadInsights();
   searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
     runSearch();
@@ -736,6 +738,158 @@ async function initCoursePage() {
     courseContext.textContent = error.message;
     uploadForm.hidden = true;
   }
+}
+
+function insightRow(file) {
+  const item = document.createElement("li");
+  item.className = "file-row";
+
+  const details = document.createElement("div");
+  details.className = "file-details";
+  const title = document.createElement("h3");
+  title.textContent = file.title;
+  const meta = document.createElement("p");
+  meta.className = "file-meta";
+  const course = file.course?.name || "未知课程";
+  meta.textContent = `${course} · ${file.original_name} · ${formatFileSize(file.size)} · 下载 ${file.download_count} 次`;
+  details.append(title, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "file-actions";
+  const courseLink = document.createElement("a");
+  courseLink.className = "course-link";
+  courseLink.href = courseUrl(file.course);
+  courseLink.textContent = "查看课程";
+  const download = document.createElement("a");
+  download.className = "download-link";
+  download.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+  download.textContent = "下载";
+  download.setAttribute("download", "");
+  actions.append(courseLink, download);
+
+  item.append(details, actions);
+  return item;
+}
+
+async function loadInsightList(list, url) {
+  if (!list) return;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("加载失败。");
+    const data = await response.json();
+    list.innerHTML = "";
+    if (!data.items.length) {
+      showState(list, "暂时没有可展示的资料。");
+      return;
+    }
+    data.items.forEach((file) => list.append(insightRow(file)));
+  } catch (error) {
+    showState(list, error.message || "加载失败。", true);
+  }
+}
+
+function loadInsights() {
+  loadInsightList(hotList, "/api/hot");
+  loadInsightList(recentList, "/api/recent");
+}
+
+async function loadOverview() {
+  if (!overviewList) return;
+  try {
+    const response = await fetch("/api/overview");
+    if (!response.ok) throw new Error(await readError(response, "概览加载失败。"));
+    const data = await response.json();
+    const rows = [
+      ["课程数", data.courses],
+      [
+        "资料",
+        `已通过 ${data.files.approved} · 待审核 ${data.files.pending} · 已拒绝 ${data.files.rejected}`,
+      ],
+      ["回收站", data.trash],
+      ["用户", `启用 ${data.users_active} / 共 ${data.users_total}`],
+      ["存储用量", formatFileSize(data.storage_bytes)],
+      ["下载总数", data.downloads],
+    ];
+    overviewList.innerHTML = "";
+    rows.forEach(([label, value]) => {
+      const item = document.createElement("li");
+      item.className = "overview-row";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const strong = document.createElement("strong");
+      strong.textContent = String(value);
+      item.append(name, strong);
+      overviewList.append(item);
+    });
+  } catch (error) {
+    showState(overviewList, error.message || "概览加载失败。", true);
+  }
+}
+
+function formatSessionLine(session) {
+  const created = formatDateTime(session.created_at) || session.created_at;
+  const expires = formatDateTime(session.expires_at) || session.expires_at;
+  const parts = [`登录于 ${created}`, `有效期至 ${expires}`];
+  if (session.ip) parts.push(session.ip);
+  return parts.join(" · ");
+}
+
+function renderSessions(items) {
+  sessionsList.innerHTML = "";
+  if (!items.length) {
+    showState(sessionsList, "没有登录记录。");
+    return;
+  }
+  items.forEach((session) => {
+    const item = document.createElement("li");
+    item.className = "record-row";
+    const details = document.createElement("div");
+    details.className = "file-details";
+    const title = document.createElement("p");
+    title.className = "file-meta";
+    title.textContent = `${session.user_agent || "未知设备"}${session.current ? "（当前设备）" : ""}`;
+    const meta = document.createElement("p");
+    meta.className = "file-meta";
+    meta.textContent = formatSessionLine(session);
+    details.append(title, meta);
+    item.append(details);
+    if (!session.current) {
+      const actions = document.createElement("div");
+      actions.className = "file-actions";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button danger-button";
+      button.textContent = "退出该设备";
+      button.addEventListener("click", () => revokeSession(session.id));
+      actions.append(button);
+      item.append(actions);
+    }
+    sessionsList.append(item);
+  });
+}
+
+async function loadSessions() {
+  if (!sessionsList) return;
+  try {
+    const response = await fetch("/api/my-sessions");
+    if (!response.ok) throw new Error(await readError(response, "登录设备加载失败。"));
+    renderSessions((await response.json()).items || []);
+  } catch (error) {
+    showState(sessionsList, error.message || "登录设备加载失败。", true);
+  }
+}
+
+async function revokeSession(sessionId) {
+  if (!window.confirm("确定退出该设备吗？")) return;
+  const response = await fetch(
+    `/api/my-sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    window.alert(await readError(response, "退出失败。"));
+    return;
+  }
+  loadSessions();
 }
 
 async function bootstrap() {

@@ -97,6 +97,12 @@ const searchStart = document.querySelector("#search-start");
 const searchEnd = document.querySelector("#search-end");
 const searchSort = document.querySelector("#search-sort");
 const searchResetButton = document.querySelector("#search-reset");
+const overviewPanel = document.querySelector("#overview-panel");
+const overviewList = document.querySelector("#overview-list");
+const sessionsPanel = document.querySelector("#sessions-panel");
+const sessionsList = document.querySelector("#sessions-list");
+const hotList = document.querySelector("#hot-list");
+const recentList = document.querySelector("#recent-list");
 
 // 上传大小上限：默认 20 MB，登录后在课程页用后端配额里的 max_file_size 覆盖。
 // 不写死，避免管理员调过 COURSEBOX_MAX_FILE_SIZE 后前后端判断不一致。
@@ -241,6 +247,8 @@ function updateAuthUI() {
   if (adminUserPanel) adminUserPanel.hidden = currentUser?.role !== "admin";
   if (auditPanel) auditPanel.hidden = currentUser?.role !== "admin";
   if (trashPanel) trashPanel.hidden = currentUser?.role !== "admin";
+  if (overviewPanel) overviewPanel.hidden = currentUser?.role !== "admin";
+  if (sessionsPanel) sessionsPanel.hidden = !currentUser;
   if (myUploadsPanel) myUploadsPanel.hidden = !currentUser;
   updateUploadAccess();
   if (currentCourse) renderCourseActions(currentCourse);
@@ -249,6 +257,8 @@ function updateAuthUI() {
   ensureUserPanelLoaded();
   ensureAuditLoaded();
   ensureTrashLoaded();
+  ensureOverviewLoaded();
+  ensureSessionsLoaded();
   ensureMyUploadsLoaded();
 }
 
@@ -280,11 +290,27 @@ function ensureTrashLoaded() {
   loadTrash(1);
 }
 
+function ensureOverviewLoaded() {
+  if (!overviewPanel || currentUser?.role !== "admin") return;
+  if (overviewPanel.dataset.loaded === "1") return;
+  overviewPanel.dataset.loaded = "1";
+  loadOverview();
+}
+
+function ensureSessionsLoaded() {
+  if (!sessionsPanel || !currentUser) return;
+  if (sessionsPanel.dataset.loaded === "1") return;
+  sessionsPanel.dataset.loaded = "1";
+  loadSessions();
+}
+
 // 切换账户时必须丢掉上一个账户的加载标记，否则会沿用旧列表。
 function resetPanelLoadFlags() {
   adminUserPanel?.removeAttribute("data-loaded");
   auditPanel?.removeAttribute("data-loaded");
   trashPanel?.removeAttribute("data-loaded");
+  overviewPanel?.removeAttribute("data-loaded");
+  sessionsPanel?.removeAttribute("data-loaded");
   myUploadsPanel?.removeAttribute("data-loaded");
 }
 
@@ -774,7 +800,7 @@ function renderFiles(data, courseId) {
     titleLine.append(title, statusBadge(file.status));
     const metadata = document.createElement("p");
     metadata.className = "file-meta";
-    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatDateTime(file.upload_time) || "上传时间未知"}`;
+    metadata.textContent = `${file.original_name} · ${formatFileSize(file.size)} · ${formatDateTime(file.upload_time) || "上传时间未知"} · 下载 ${file.download_count || 0} 次`;
     const technical = document.createElement("p");
     technical.className = "file-meta file-technical";
     technical.textContent = `${file.mime_type || "未知类型"}${file.sha256 ? ` · SHA-256 ${file.sha256.slice(0, 12)}…` : ""}`;

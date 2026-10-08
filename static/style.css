@@ -634,3 +634,26 @@ body.preview-open { overflow: hidden; }
   background: #fde68a;
   color: inherit;
 }
+
+/* 管理员概览：一行一个指标。 */
+.overview-list {
+  display: grid;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.overview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.overview-row strong {
+  color: #1f2937;
+}

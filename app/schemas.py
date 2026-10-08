@@ -379,3 +379,55 @@ class ShareView(BaseModel):
     files: list[dict]
     note: str | None = None
     expires_at: str
+
+
+class InsightFile(BaseModel):
+    """热门 / 最新列表里的一条资料，带所属课程。"""
+
+    id: int
+    course_id: int
+    title: str
+    original_name: str
+    size: int
+    upload_time: str
+    download_count: int = 0
+    status: str
+    course: Course
+
+
+class InsightFileList(BaseModel):
+    items: list[InsightFile]
+
+
+class OverviewFiles(BaseModel):
+    approved: int
+    pending: int
+    rejected: int
+    total: int
+
+
+class Overview(BaseModel):
+    """管理员概览：数量与用量，全部为只读聚合。"""
+
+    courses: int
+    files: OverviewFiles
+    trash: int
+    users_total: int
+    users_active: int
+    storage_bytes: int
+    downloads: int
+
+
+class SessionInfo(BaseModel):
+    """一条登录会话。current 表示就是发起这次请求的会话。"""
+
+    id: int
+    created_at: str
+    expires_at: str
+    user_agent: str | None = None
+    ip: str | None = None
+    current: bool = False
+
+
+class SessionList(BaseModel):
+    items: list[SessionInfo]

@@ -25,6 +25,7 @@ from app.api.auth import set_session_cookie
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router, trash_router
 from app.api.files import router as files_router
+from app.api.insights import router as insights_router
 from app.api.share import router as share_router
 from app.api.users import router as users_router
 from app.config import database_path, get_settings, uploads_path
@@ -133,6 +134,7 @@ app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(audit_router)
 app.include_router(share_router)
+app.include_router(insights_router)
 
 
 class BodySizeLimitMiddleware:
@@ -799,6 +801,12 @@ OPENAPI_SCHEMA_TITLES = {
     "TrashFilePage": "回收站分页响应",
     "AuditLog": "操作记录",
     "AuditLogPage": "操作记录分页响应",
+    "InsightFile": "概览资料",
+    "InsightFileList": "概览资料列表",
+    "OverviewFiles": "资料数量",
+    "Overview": "站点概览",
+    "SessionInfo": "登录会话",
+    "SessionList": "登录会话列表",
     "HTTPValidationError": "请求校验错误",
     "ValidationError": "字段校验错误",
 }
@@ -807,6 +815,7 @@ OPENAPI_PATH_PARAM_TITLES = {
     "course_id": "课程编号",
     "file_id": "资料编号",
     "share_id": "分享编号",
+    "session_id": "会话编号",
     "token": "令牌",
     "coursebox_session": "会话令牌",
 }
@@ -852,6 +861,19 @@ OPENAPI_PROPERTY_TITLES = {
     "user_used": "我的已用",
     "user_remaining": "我的剩余",
     "disk_free": "磁盘剩余",
+    "download_count": "下载次数",
+    "current": "当前设备",
+    "user_agent": "浏览器标识",
+    "ip": "来源 IP",
+    "approved": "已通过",
+    "pending": "待审核",
+    "rejected": "已拒绝",
+    "courses": "课程数",
+    "trash": "回收站",
+    "users_total": "用户总数",
+    "users_active": "启用用户",
+    "storage_bytes": "存储用量",
+    "downloads": "下载总数",
     "days": "有效天数",
     "note": "备注",
     "token": "令牌",
