@@ -40,6 +40,20 @@ Open `http://127.0.0.1:8000/` locally. To share it on the same LAN, use the
 host computer's LAN address, for example `http://172.24.136.216:8000/`, and
 keep the container running.
 
+## Run with Docker Compose (persistent)
+
+`docker-compose.yml` keeps the database and uploads in named volumes, so
+rebuilding the container does not lose data:
+
+```powershell
+$env:COURSEBOX_ADMIN_PASSWORD = "change-this-password"
+docker compose up --build -d
+```
+
+Set `COURSEBOX_ADMIN_PASSWORD` before the first start; data lives in the
+`coursebox-data` and `coursebox-uploads` volumes. `docker compose down` keeps the
+volumes; add `-v` only when you intend to wipe the data.
+
 ## Local Windows startup
 
 ```powershell

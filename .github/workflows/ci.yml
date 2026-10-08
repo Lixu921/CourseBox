@@ -57,3 +57,55 @@ jobs:
         run: |
           python -m pytest -q \
             --cov=app --cov-report=term-missing --cov-fail-under=90
+
+      # 依赖安全扫描只在 3.14 腿跑一次。先以「只报告不阻断」的方式接入，避免上游
+      # 传递依赖刚披露的 CVE 直接把所有人的 CI 打红；稳定后再收紧为阻断。
+      - name: 依赖安全扫描
+        if: matrix.python-version == '3.14'
+        continue-on-error: true
+        run: python -m pip_audit
+
+  smoke:
+    name: 真实服务冒烟
+    runs-on: ubuntu-latest
+    env:
+      COURSEBOX_ENV: development
+      COURSEBOX_ADMIN_PASSWORD: smoke-test-password
+      COURSEBOX_DB: data/smoke.db
+      COURSEBOX_UPLOAD_DIR: uploads
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 准备 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            pyproject.toml
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      # 起真实 uvicorn 再打一遍接口：TestClient 会绕过真实的中间件顺序与路由匹配，
+      # 历史上的批量审核 422、分块请求体 413 都是只在真实服务上才暴露的。
+      - name: 启动服务并等待就绪
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8001/api/health > /dev/null; then
+              echo "服务已就绪"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "服务未在 30 秒内就绪" >&2
+          exit 1
+
+      - name: 冒烟
+        run: python scripts/smoke.py --base-url http://127.0.0.1:8001

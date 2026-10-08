@@ -1,0 +1,23 @@
+services:
+  coursebox:
+    build: .
+    image: coursebox:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # 生产环境务必用 COURSEBOX_ADMIN_PASSWORD 覆盖默认值；容器内数据库与上传
+      # 目录指向挂载卷，容器重建也不会丢数据（Render 免费盘那种易失问题这里没有）。
+      COURSEBOX_HOST: 0.0.0.0
+      COURSEBOX_ENV: ${COURSEBOX_ENV:-development}
+      COURSEBOX_DB: /app/data/coursebox.db
+      COURSEBOX_UPLOAD_DIR: /app/uploads
+      COURSEBOX_ADMIN_PASSWORD: ${COURSEBOX_ADMIN_PASSWORD:-change-this-password}
+      COURSEBOX_TRUST_PROXY: ${COURSEBOX_TRUST_PROXY:-false}
+    volumes:
+      - coursebox-data:/app/data
+      - coursebox-uploads:/app/uploads
+    restart: unless-stopped
+
+volumes:
+  coursebox-data:
+  coursebox-uploads:

@@ -69,13 +69,15 @@ CourseBox/
 │  ├─ backup.ps1        # 备份脚本（调用 scripts/backup.py）
 │  ├─ backup.py         # 计划任务入口，等价于 py -m app.backup
 │  ├─ db_check.py       # 备份完整性校验
-│  └─ restore.ps1       # 备份校验和恢复
+│  ├─ restore.ps1       # 备份校验和恢复
+│  └─ smoke.py          # 真实服务的端到端冒烟（CI 用）
 ├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest（3.14 腿带覆盖率门槛）
 ├─ .dockerignore        # 容器构建忽略清单
 ├─ .env.example         # 环境配置示例
 ├─ .gitignore           # 排除 data/、uploads/、backups/ 等
 ├─ DEPLOY.md            # 部署说明
 ├─ Dockerfile           # 容器镜像构建
+├─ docker-compose.yml   # 带持久化卷的本地/单机编排
 ├─ LICENSE              # 开源许可
 ├─ README.md            # 项目说明（本文件）
 ├─ TASKBOOK.md          # 开工时的原始任务书（正文属历史，见其中的「现状注记」）
@@ -85,6 +87,7 @@ CourseBox/
 ├─ TASKBOOK_ROUND9.md   # 第九轮（健康检查缓存与审计游标）任务书
 ├─ TASKBOOK_ROUND10.md  # 第十轮（编辑乐观锁）任务书
 ├─ TASKBOOK_ROUND11.md  # 第十一轮（请求体/限流/内容校验加固）任务书
+├─ TASKBOOK_ROUND12.md  # 第十二轮（CI 冒烟、依赖审计、compose）任务书
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ render.yaml          # Render 部署配置
 ├─ requirements.txt     # 运行时依赖
@@ -171,7 +174,14 @@ py -m pytest -q
 
 测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 145 个用例，覆盖健康检查（含缓存）、页面路由与错误响应、安全响应头、限流（IP 与账户写）、接口文档 CSP、请求体上限（Content-Length 与分块）、课程增删改查与分页、编辑乐观锁、资料上传下载预览、可执行内容拦截、重复检测、搜索与命中字段与可见性、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志（含游标分页）、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
-仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
+仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`），并跑一次依赖安全扫描（`pip-audit`，先只报告不阻断）。另有一个 `smoke` 任务：起真实 `uvicorn` 后执行 `scripts/smoke.py`，覆盖 TestClient 会绕过的那部分（中间件顺序、路由匹配）。推送或提交 PR 时自动执行。
+
+本地也可以对已启动的服务跑冒烟：
+
+```powershell
+py -m uvicorn app.main:app --port 8000
+py scripts\smoke.py --base-url http://127.0.0.1:8000
+```
 
 ## 部署与运维
 
