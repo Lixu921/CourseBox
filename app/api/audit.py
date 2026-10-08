@@ -38,6 +38,8 @@ AuditAction = Literal[
     "export",
     # 发表评论。
     "comment",
+    # 自助注册。
+    "register",
 ]
 AuditEntity = Literal["course", "file", "user", "audit"]
 
@@ -58,6 +60,7 @@ ACTION_LABELS = {
     "rejected": "审核拒绝",
     "export": "导出",
     "comment": "评论",
+    "register": "注册",
 }
 ENTITY_LABELS = {"course": "课程", "file": "资料", "user": "用户", "audit": "审计"}
 

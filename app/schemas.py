@@ -147,6 +147,23 @@ class LoginRequest(BaseModel):
         return value
 
 
+class RegisterRequest(BaseModel):
+    """自助注册：只要用户名 + 密码，角色由服务端决定（只可能是 uploader/viewer）。"""
+
+    username: str = Field(..., min_length=3, max_length=80)
+    password: str = Field(..., min_length=8, max_length=200)
+
+    @field_validator("username")
+    @classmethod
+    def username_must_not_be_blank(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("用户名必须是文本")
+        value = value.strip()
+        if not value:
+            raise ValueError("用户名不能为空")
+        return value
+
+
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=80)
     password: str = Field(..., min_length=8, max_length=200)

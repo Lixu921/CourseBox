@@ -31,7 +31,8 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v7 新增 share_links（只读分享链接）
 #   v8 files 补 download_count（下载计数）；sessions 补 user_agent / ip（登录设备）
 #   v9 新增 comments（资料评论）
-SCHEMA_VERSION = 9
+#   v10 users 补 registered_ip（自助注册按 IP 限一个）
+SCHEMA_VERSION = 10
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -76,7 +77,8 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('admin', 'uploader', 'viewer')),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                registered_ip TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
@@ -302,6 +304,8 @@ def migrate_users_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
         )
+    if "registered_ip" not in columns:
+        connection.execute("ALTER TABLE users ADD COLUMN registered_ip TEXT")
 
 
 SHA256_INDEX_NAME = "idx_files_course_sha256"

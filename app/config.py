@@ -47,6 +47,11 @@ DEFAULT_HEALTH_CACHE_SECONDS = 10
 # 已登录账户的「写操作」限流（每分钟）。IP 限流在校园网等共用出口下会变成全站共享，
 # 这里再按账号加一道闸，只对 POST/PUT/PATCH/DELETE 生效，避免用户被别人的写入挤掉。
 DEFAULT_ACCOUNT_RATE_LIMIT_PER_MINUTE = 120
+# 是否开放自助注册。默认开启；不想让人随便注册就设 COURSEBOX_ALLOW_REGISTRATION=false。
+DEFAULT_ALLOW_REGISTRATION = True
+# 自助注册得到的角色，只允许 uploader / viewer —— 绝不允许 admin（否则等于自封管理员）。
+DEFAULT_REGISTER_ROLE = "uploader"
+REGISTERABLE_ROLES = {"uploader", "viewer"}
 
 logger = logging.getLogger("coursebox.config")
 
@@ -171,6 +176,12 @@ def _bool_from_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _register_role_from_env() -> str:
+    value = os.getenv("COURSEBOX_REGISTER_ROLE", DEFAULT_REGISTER_ROLE).strip().lower()
+    # 非法值（含 admin）一律回退到默认，杜绝自助注册拿到管理员。
+    return value if value in REGISTERABLE_ROLES else DEFAULT_REGISTER_ROLE
+
+
 # get_settings() 每个请求会被多个中间件各调用一次，而默认密码的告警只需要提示一次，
 # 否则开发环境的日志会被同一条警告刷满、把真正的请求日志挤掉。
 _default_password_warned = False
@@ -238,6 +249,8 @@ class Settings:
     max_request_bytes: int
     health_cache_seconds: int
     account_rate_limit_per_minute: int
+    allow_registration: bool
+    register_role: str
 
     @property
     def is_production(self) -> bool:
@@ -316,4 +329,8 @@ def get_settings() -> Settings:
             "COURSEBOX_ACCOUNT_RATE_LIMIT_PER_MINUTE",
             DEFAULT_ACCOUNT_RATE_LIMIT_PER_MINUTE,
         ),
+        allow_registration=_bool_from_env(
+            "COURSEBOX_ALLOW_REGISTRATION", DEFAULT_ALLOW_REGISTRATION
+        ),
+        register_role=_register_role_from_env(),
     )

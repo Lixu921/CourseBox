@@ -19,6 +19,7 @@
       <div class="auth-area">
         <span id="auth-status" class="auth-status">未登录</span>
         <button id="login-toggle" class="text-button" type="button">登录</button>
+        <button id="register-toggle" class="text-button" type="button">注册</button>
         <button id="password-toggle" class="text-button" type="button" hidden>修改密码</button>
         <button id="logout-button" class="text-button" type="button" hidden>退出</button>
       </div>
@@ -40,6 +41,24 @@
         </div>
         <button class="primary-button compact-button" type="submit">登录</button>
         <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <section id="register-panel" class="auth-panel" hidden aria-labelledby="register-heading">
+      <div class="section-heading">
+        <h2 id="register-heading">注册账户</h2>
+        <span class="muted">注册后即可上传资料（需审核）与发表评论</span>
+      </div>
+      <form id="register-form" class="inline-form">
+        <div class="form-field">
+          <label for="register-username">用户名</label>
+          <input id="register-username" name="username" type="text" minlength="3" maxlength="80" autocomplete="username" required>
+        </div>
+        <div class="form-field">
+          <label for="register-password">密码</label>
+          <input id="register-password" name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required>
+        </div>
+        <button class="primary-button compact-button" type="submit">注册</button>
+        <p id="register-message" class="form-message" role="status" aria-live="polite"></p>
       </form>
     </section>
     <section id="password-panel" class="auth-panel" hidden aria-labelledby="password-heading">

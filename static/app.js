@@ -46,6 +46,10 @@ const authHint = document.querySelector("#auth-hint");
 const authHintLogin = document.querySelector("#auth-hint-login");
 const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
+const registerToggle = document.querySelector("#register-toggle");
+const registerPanel = document.querySelector("#register-panel");
+const registerForm = document.querySelector("#register-form");
+const registerMessage = document.querySelector("#register-message");
 const adminCoursePanel = document.querySelector("#admin-course-panel");
 const courseCreateForm = document.querySelector("#course-create-form");
 const courseCreateMessage = document.querySelector("#course-create-message");
@@ -248,10 +252,12 @@ function updateAuthUI() {
     ? `${currentUser.username} · ${ROLE_LABELS[currentUser.role] || currentUser.role}`
     : "未登录";
   loginToggle.hidden = Boolean(currentUser);
+  if (registerToggle) registerToggle.hidden = Boolean(currentUser);
   if (passwordToggle) passwordToggle.hidden = !currentUser;
   logoutButton.hidden = !currentUser;
   if (authHint) authHint.hidden = Boolean(currentUser);
   if (loginPanel && currentUser) loginPanel.hidden = true;
+  if (registerPanel && currentUser) registerPanel.hidden = true;
   // 退出登录后必须收起改密码面板，否则下一个访客能看到空表单。
   if (passwordPanel && !currentUser) passwordPanel.hidden = true;
   if (adminCoursePanel) adminCoursePanel.hidden = currentUser?.role !== "admin";
@@ -338,7 +344,48 @@ async function loadCurrentUser() {
 function toggleLoginPanel() {
   if (!loginPanel) return;
   loginPanel.hidden = !loginPanel.hidden;
-  if (!loginPanel.hidden) document.querySelector("#login-username")?.focus();
+  if (!loginPanel.hidden) {
+    if (registerPanel) registerPanel.hidden = true;
+    document.querySelector("#login-username")?.focus();
+  }
+}
+
+function toggleRegisterPanel() {
+  if (!registerPanel) return;
+  registerPanel.hidden = !registerPanel.hidden;
+  if (!registerPanel.hidden) {
+    if (loginPanel) loginPanel.hidden = true;
+    registerMessage.textContent = "";
+    registerMessage.className = "form-message";
+    document.querySelector("#register-username")?.focus();
+  }
+}
+
+async function submitRegister(event) {
+  event.preventDefault();
+  registerMessage.textContent = "正在注册...";
+  registerMessage.className = "form-message";
+  const submitButton = registerForm.querySelector("button[type=submit]");
+  submitButton.disabled = true;
+  try {
+    const response = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(registerForm))),
+    });
+    if (!response.ok) throw new Error(await readError(response, "注册失败。"));
+    registerForm.reset();
+    registerPanel.hidden = true;
+    // 注册成功即已登录，直接刷新登录态。
+    currentUser = await response.json();
+    resetPanelLoadFlags();
+    updateAuthUI();
+  } catch (error) {
+    registerMessage.textContent = error.message || "注册失败，请稍后重试。";
+    registerMessage.className = "form-message error-message";
+  } finally {
+    submitButton.disabled = false;
+  }
 }
 
 async function submitLogin(event) {

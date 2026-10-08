@@ -605,6 +605,8 @@ function initAuth() {
   });
   logoutButton?.addEventListener("click", logout);
   loginForm?.addEventListener("submit", submitLogin);
+  registerToggle?.addEventListener("click", toggleRegisterPanel);
+  registerForm?.addEventListener("submit", submitRegister);
   passwordToggle?.addEventListener("click", togglePasswordPanel);
   passwordForm?.addEventListener("submit", submitPasswordChange);
   previewClose?.addEventListener("click", closePreview);

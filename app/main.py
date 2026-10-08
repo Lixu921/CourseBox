@@ -784,6 +784,7 @@ OPENAPI_SCHEMA_TITLES = {
     "FilePage": "资料分页响应",
     "FileBatchReview": "批量审核请求",
     "LoginRequest": "登录请求",
+    "RegisterRequest": "注册请求",
     "PasswordChange": "修改密码请求",
     "PasswordReset": "重置密码请求",
     "User": "用户",

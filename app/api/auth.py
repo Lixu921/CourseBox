@@ -24,7 +24,14 @@ from app.db import (
 )
 from app.ratelimit import account_rate_limiter
 from app.ratelimit import client_ip as resolve_client_ip
-from app.schemas import LoginRequest, PasswordChange, SessionInfo, SessionList, User
+from app.schemas import (
+    LoginRequest,
+    PasswordChange,
+    RegisterRequest,
+    SessionInfo,
+    SessionList,
+    User,
+)
 
 router = APIRouter(tags=["账户"])
 
@@ -213,6 +220,69 @@ def login(
     db.commit()
     set_session_cookie(response, token)
     return User(id=row["id"], username=row["username"], role=row["role"])
+
+
+@router.post(
+    "/api/register",
+    include_in_schema=False,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/接口/注册",
+    response_model=User,
+    status_code=status.HTTP_201_CREATED,
+    summary="注册账户",
+    operation_id="注册账户",
+)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    db: sqlite3.Connection = Depends(get_db),
+) -> User:
+    settings = get_settings()
+    if not settings.allow_registration:
+        raise HTTPException(status_code=403, detail="注册功能已关闭")
+    client_ip = resolve_client_ip(request)
+    # 一个来源 IP 只能注册一个账户。这是软限制：共用出口 IP（校园网）会互相影响，
+    # 想刷的人换 IP 也能绕过；真正的兜底是限流与管理员治理。
+    if (
+        db.execute(
+            "SELECT 1 FROM users WHERE registered_ip = ?", (client_ip,)
+        ).fetchone()
+        is not None
+    ):
+        raise HTTPException(status_code=409, detail="该来源已经注册过账户")
+    try:
+        cursor = db.execute(
+            "INSERT INTO users (username, password_hash, role, registered_ip) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                payload.username,
+                hash_password(payload.password),
+                settings.register_role,
+                client_ip,
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        db.rollback()
+        if "username" in str(error).lower():
+            raise HTTPException(status_code=409, detail="用户名已存在") from error
+        raise
+    # 注册成功直接登录，省得再登一次。
+    token, token_hash, expires_at = new_session_token()
+    user_agent = (request.headers.get("user-agent") or "").strip()[:200] or None
+    db.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, ip) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (cursor.lastrowid, token_hash, expires_at, user_agent, client_ip),
+    )
+    record_audit(db, cursor.lastrowid, "register", "user", cursor.lastrowid, "用户注册")
+    db.commit()
+    set_session_cookie(response, token)
+    return User(
+        id=cursor.lastrowid, username=payload.username, role=settings.register_role
+    )
 
 
 @router.get(
