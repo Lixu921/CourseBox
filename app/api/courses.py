@@ -156,22 +156,31 @@ def update_course(
         values["tags"] = serialize_tags(values["tags"])
     if not values:
         raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
-    current = db.execute(
-        "SELECT version FROM courses WHERE id = ?", (course_id,)
-    ).fetchone()
-    if current is None:
-        raise HTTPException(status_code=404, detail="课程不存在")
-    # 乐观锁：客户端带了版本号且与库里的不一致，说明有人先改过，拒绝覆盖。
-    if expected_version is not None and expected_version != current["version"]:
-        raise HTTPException(status_code=409, detail="课程已被他人修改，请刷新后重试")
     assignments = ", ".join(f"{field} = ?" for field in values)
     try:
-        cursor = db.execute(
-            f"UPDATE courses SET {assignments}, version = version + 1 WHERE id = ?",  # noqa: S608 - 字段名来自校验过的模型
-            (*values.values(), course_id),
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="课程不存在")
+        if expected_version is not None:
+            # 原子乐观锁：把版本判断放进 WHERE，避免「先查后写」被并发覆盖。
+            cursor = db.execute(
+                f"UPDATE courses SET {assignments}, version = version + 1 "  # noqa: S608 - 字段名来自校验过的模型
+                "WHERE id = ? AND version = ?",
+                (*values.values(), course_id, expected_version),
+            )
+            if cursor.rowcount == 0:
+                exists = db.execute(
+                    "SELECT 1 FROM courses WHERE id = ?", (course_id,)
+                ).fetchone()
+                if exists is None:
+                    raise HTTPException(status_code=404, detail="课程不存在")
+                raise HTTPException(
+                    status_code=409, detail="课程已被他人修改，请刷新后重试"
+                )
+        else:
+            cursor = db.execute(
+                f"UPDATE courses SET {assignments}, version = version + 1 WHERE id = ?",  # noqa: S608
+                (*values.values(), course_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="课程不存在")
         record_audit(db, user["id"], "update", "course", course_id)
         db.commit()
     except HTTPException:

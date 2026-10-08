@@ -221,7 +221,9 @@ async function editCourse(course) {
     window.alert(await readError(response, "课程更新失败。"));
     return;
   }
-  currentCourse = await response.json();
+  // 编辑接口返回的是普通 Course（没有 file_count），合并而不是整体覆盖，
+  // 否则课程摘要里的「N 份已通过资料」会短暂变成 undefined。
+  currentCourse = { ...currentCourse, ...(await response.json()) };
   courseName.textContent = currentCourse.name;
   courseContext.textContent = courseContextText(currentCourse);
   renderCourseActions(currentCourse);

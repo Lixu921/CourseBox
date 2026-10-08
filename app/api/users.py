@@ -48,12 +48,6 @@ def fetch_user(user_id: int, db: sqlite3.Connection) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def count_active_admins(db: sqlite3.Connection) -> int:
-    return db.execute(
-        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
-    ).fetchone()[0]
-
-
 @router.get("/api/users", include_in_schema=False)
 @router.get(
     "/接口/用户",
@@ -175,17 +169,30 @@ def apply_user_update(
         if not new_active:
             raise HTTPException(status_code=409, detail="不能停用当前登录的账户")
 
-    if old_role == "admin" and was_active and not (new_role == "admin" and new_active):
-        if count_active_admins(db) <= 1:
-            raise HTTPException(status_code=409, detail="系统必须保留至少一个启用的管理员")
-
     if new_role == old_role and new_active == was_active:
         return user_admin_response(row)
 
-    db.execute(
-        "UPDATE users SET role = ?, is_active = ? WHERE id = ?",
-        (new_role, 1 if new_active else 0, user_id),
+    demoting_active_admin = (
+        old_role == "admin" and was_active and not (new_role == "admin" and new_active)
     )
+    if demoting_active_admin:
+        # 原子地保证「至少保留一个启用的管理员」：把计数放进 WHERE，由 SQLite 串行化写入。
+        # 两个管理员同时被停用时，第二个的语句会看到第一个已提交的结果（计数为 1）而失败。
+        cursor = db.execute(
+            "UPDATE users SET role = ?, is_active = ? WHERE id = ? AND "
+            "(SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1) > 1",
+            (new_role, 1 if new_active else 0, user_id),
+        )
+        if cursor.rowcount == 0:
+            db.rollback()
+            raise HTTPException(
+                status_code=409, detail="系统必须保留至少一个启用的管理员"
+            )
+    else:
+        db.execute(
+            "UPDATE users SET role = ?, is_active = ? WHERE id = ?",
+            (new_role, 1 if new_active else 0, user_id),
+        )
     changes: list[str] = []
     if new_role != old_role:
         old_label = ROLE_LABELS.get(old_role, old_role)

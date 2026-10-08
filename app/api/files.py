@@ -241,6 +241,40 @@ def upload_allowance(
     return quota["allowed_bytes"], quota["reason"]
 
 
+def quota_guard_clauses(
+    course_id: int, size: int, user_id: int
+) -> tuple[list[str], list[object]]:
+    """生成「写入时再原子复检配额」的 WHERE 片段。
+
+    上传是「先流式落盘、之后才写库」，开始时的配额检查可能已被并发上传抢先。
+    把已用量的子查询放进 INSERT 的 WHERE，写入这一条语句本身带上了额度判断，
+    由 SQLite 保证原子：超限时这条 INSERT 的 rowcount 为 0。
+    """
+
+    settings = get_settings()
+    clauses: list[str] = []
+    params: list[object] = []
+    if settings.max_course_bytes:
+        clauses.append(
+            "(SELECT COALESCE(SUM(size), 0) FROM files "
+            "WHERE course_id = ? AND deleted_at IS NULL) + ? <= ?"
+        )
+        params.extend([course_id, size, settings.max_course_bytes])
+    if settings.max_total_bytes:
+        clauses.append(
+            "(SELECT COALESCE(SUM(size), 0) FROM files "
+            "WHERE deleted_at IS NULL) + ? <= ?"
+        )
+        params.extend([size, settings.max_total_bytes])
+    if settings.max_user_bytes:
+        clauses.append(
+            "(SELECT COALESCE(SUM(size), 0) FROM files "
+            "WHERE uploaded_by = ? AND deleted_at IS NULL) + ? <= ?"
+        )
+        params.extend([user_id, size, settings.max_user_bytes])
+    return clauses, params
+
+
 def file_response(row: sqlite3.Row) -> dict:
     result = {
         "id": row["id"],
@@ -628,13 +662,15 @@ async def upload_course_file(
             raise HTTPException(status_code=415, detail="不允许上传可执行文件")
 
         try:
+            guard_clauses, guard_params = quota_guard_clauses(
+                course_id, size, user["id"]
+            )
+            where = " AND ".join(guard_clauses) if guard_clauses else "1 = 1"
             cursor = db.execute(
-                """
-                INSERT INTO files
-                    (course_id, title, filename, original_name, size, mime_type, sha256,
-                     status, uploaded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO files "
+                "(course_id, title, filename, original_name, size, mime_type, sha256, "
+                "status, uploaded_by) "
+                f"SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {where}",  # noqa: S608 - 片段由内部常量生成
                 (
                     course_id,
                     title,
@@ -645,8 +681,15 @@ async def upload_course_file(
                     digest.hexdigest(),
                     "approved" if user["role"] == "admin" else "pending",
                     user["id"],
+                    *guard_params,
                 ),
             )
+            if cursor.rowcount == 0:
+                # 并发上传把额度抢走了：此刻再算一次原因用于提示。
+                raise HTTPException(
+                    status_code=413,
+                    detail=upload_quota(course_id, db, user["id"])["reason"],
+                )
             record_audit(
                 db,
                 user["id"],
@@ -701,24 +744,32 @@ def update_file(
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     existing = db.execute(
-        "SELECT uploaded_by, version FROM files WHERE id = ? AND deleted_at IS NULL",
+        "SELECT uploaded_by FROM files WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     ).fetchone()
     if existing is None:
         raise HTTPException(status_code=404, detail="资料不存在")
     if user["role"] != "admin" and existing["uploaded_by"] != user["id"]:
         raise HTTPException(status_code=403, detail="没有编辑此资料的权限")
-    # 乐观锁：客户端带了版本号且与库里不一致，说明有人先改过，拒绝覆盖。
-    if update.version is not None and update.version != existing["version"]:
-        raise HTTPException(status_code=409, detail="资料已被他人修改，请刷新后重试")
-    cursor = db.execute(
-        "UPDATE files SET title = ?, version = version + 1 "
-        "WHERE id = ? AND deleted_at IS NULL",
-        (update.title, file_id),
-    )
-    if cursor.rowcount == 0:
-        db.rollback()
-        raise HTTPException(status_code=404, detail="资料不存在")
+    if update.version is not None:
+        # 原子乐观锁：把版本判断放进 WHERE。
+        cursor = db.execute(
+            "UPDATE files SET title = ?, version = version + 1 "
+            "WHERE id = ? AND deleted_at IS NULL AND version = ?",
+            (update.title, file_id, update.version),
+        )
+        if cursor.rowcount == 0:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="资料已被他人修改，请刷新后重试")
+    else:
+        cursor = db.execute(
+            "UPDATE files SET title = ?, version = version + 1 "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (update.title, file_id),
+        )
+        if cursor.rowcount == 0:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="资料不存在")
     record_audit(db, user["id"], "update", "file", file_id, "修改资料标题")
     db.commit()
     row = db.execute(
