@@ -467,3 +467,62 @@ py -m pytest -q
 - `py -m pytest` 全绿，用例数从 99 增长；拆分后不减少。
 - 起真实服务复测新增接口（沿用第五轮那套 urllib 冒烟脚本的思路）。
 
+### 第六轮完成情况
+
+5 项全部做完，用例数 99 → 119。提交信息里都写了「做了什么 + 为什么」。
+
+| # | 项目 | 提交 |
+| --- | --- | --- |
+| 1 | 检索可解释（命中字段 + 课程卡片高亮） | `d1357f7` |
+| 2 | 回收站批量恢复 / 批量彻底删除 | `bb18bda` |
+| 3 | 用户自助修改密码 | `ed10754` |
+| 4 | 课程资料清单与审计日志 CSV 导出 | `5a2d4c2` |
+| 5 | 拆分测试文件 + 覆盖率门槛 | 见下 |
+
+几处与计划不同、需要说明的地方：
+
+- **第 1 项改了做法（重要）。** 原计划是「返回并展示 FTS5 命中片段」。动手前核对了索引范围：
+  `files_fts` 只索引 `title` 与 `original_name`，而这两项在结果卡片上本来就完整显示、而且已经
+  高亮，snippet 只会把用户已经看到的文字再抄一遍，属于假需求。真正缺的是「为什么命中」——
+  课程检索按 `name / college / semester` 三个字段 OR 匹配，而 `courseCard()` 用的是
+  `textContent`，**一个字都不高亮**。所以改成：资料结果返回 `matched_fields` 并显示「命中：…」，
+  课程卡片按关键词逐字段高亮并补命中标签。
+- **第 2 项第三次撞上「路由注册顺序」这个坑。** `/api/trash/batch/restore` 与
+  `/api/trash/{file_id}/restore` 段数相同，批量路由若注册在后面，`batch` 会被当成编号解析成
+  422。对策是批量路由注册在参数路由之前，并单独用负向对照确认「顺序反了确实会 422」。
+- **第 4 项的两个决定。** 超出行数上限时报 413 而不是截断——被截断的清单最危险的地方是它
+  看起来是完整的；课程资料导出沿用列表的可见性规则，访客只能导出已通过的，否则这个接口
+  就成了绕过审核的后门。
+- **第 5 项的环境说明。** 本机系统 Python 没装 `coverage`/`pytest-cov`，于是**另建了一个隔离
+  虚拟环境**（`~/.workbuddy-ai/binaries/python/envs/default`）装 `pytest-cov` 实测，得到真实数字
+  **91%**（2062 条语句 / 189 条未覆盖），门槛取 `--cov-fail-under=90`。没有为了凑数硬调门槛。
+  另外把 `pythonpath = [".", "tests"]` 写进了 `pyproject.toml`，让 `from conftest import ...`
+  和 `import app` 不再依赖 pytest 隐式的 `sys.path` 插入。
+
+**拆分是纯搬运，已逐字校验**：用脚本按顶层块切开原 `tests/test_api.py`，再逐块与新文件比对，
+135 个块（119 个用例 + 16 个 helper/常量）**内容逐字一致**，只改了文件归属与 import 头。
+
+拆分后的文件（用例数）：
+
+```
+tests/conftest.py               公共 helper（create_client / login_* / 路由展开 / _upload_named）
+tests/test_platform.py     15   健康检查、页面与路由、响应头、限流、错误页
+tests/test_courses.py       9   课程增删改查、配额、课程关键词搜索
+tests/test_files.py        19   上传/下载/预览/分页/迁移/我的资料
+tests/test_search.py       13   中文子串、多词 AND、FTS 索引、筛选排序、命中字段
+tests/test_accounts.py     20   登录、锁定、角色权限、用户管理、改密、会话续期
+tests/test_trash.py        12   回收站单条与批量、保留期、可见性
+tests/test_archive.py       5   多选打包下载 zip
+tests/test_batch.py         6   批量改用户、批量审核
+tests/test_audit.py         3   审计列表、保留期、资源治理
+tests/test_export.py        6   CSV 导出
+tests/test_ops.py           8   备份轮转、维护、健康探针清理、启动副作用
+tests/test_frontend_contract.py  3   前后端接口一致性、页面 id 一致性
+```
+
+本轮新增的自动化验证（都不进仓库，属于一次性核验）：
+
+- jsdom 前端冒烟：检索 18 项、回收站批量 21 项、自助改密 18 项、导出 17 项断言，
+  每个脚本都带 `CB_SMOKE_BREAK=1` 负向对照，确认断言真的会失败。
+- 真实 uvicorn 端到端冒烟 41 项全过（中文路由用 `urllib` 分别编码 path 与 query）。
+
