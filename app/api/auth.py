@@ -22,6 +22,7 @@ from app.db import (
     record_audit,
     register_login_failure,
 )
+from app.ratelimit import client_ip as resolve_client_ip
 from app.schemas import LoginRequest, PasswordChange, User
 
 router = APIRouter(tags=["账户"])
@@ -148,8 +149,9 @@ def login(
     db: sqlite3.Connection = Depends(get_db),
 ) -> User:
     settings = get_settings()
-    # 反向代理后面拿到的可能是代理地址，但登录键同时包含用户名，按账号锁定仍然有效。
-    client_ip = request.client.host if request.client else "unknown"
+    # 反向代理后面 request.client.host 是代理地址，会退化成「按代理 IP 锁定」。
+    # 开启信任代理后改用 X-Forwarded-For 里的原始客户端 IP（见 app.ratelimit）。
+    client_ip = resolve_client_ip(request)
     username = credentials.username
 
     remaining = login_lock_remaining(db, username, client_ip)

@@ -98,7 +98,9 @@ const searchEnd = document.querySelector("#search-end");
 const searchSort = document.querySelector("#search-sort");
 const searchResetButton = document.querySelector("#search-reset");
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024;
+// 上传大小上限：默认 20 MB，登录后在课程页用后端配额里的 max_file_size 覆盖。
+// 不写死，避免管理员调过 COURSEBOX_MAX_FILE_SIZE 后前后端判断不一致。
+let maxFileSize = 20 * 1024 * 1024;
 const ROLE_LABELS = { admin: "管理员", uploader: "上传者", viewer: "浏览者" };
 const STATUS_LABELS = { approved: "已通过", pending: "待审核", rejected: "已拒绝" };
 // 操作记录里 action / entity_type 的取值来自后端白名单，这里只做展示用翻译。
@@ -692,6 +694,11 @@ async function loadCourseQuota() {
 
 function renderCourseQuota(quota) {
   if (!uploadQuota) return;
+  // 后端上限才是权威值，用它覆盖前端的默认上限与提示文案。
+  if (quota.max_file_size) maxFileSize = quota.max_file_size;
+  if (fileSelection && fileInput && !(fileInput.files || []).length) {
+    fileSelection.textContent = fileSelectionHint();
+  }
   const parts = [`本次最多可上传 ${formatFileSize(quota.allowed_bytes)}`];
   if (quota.course_remaining != null) {
     parts.push(`本课程剩余 ${formatFileSize(quota.course_remaining)}`);
@@ -1100,20 +1107,24 @@ function previewButton(file) {
   return button;
 }
 
+function fileSelectionHint() {
+  return `单个文件不超过 ${formatFileSize(maxFileSize)}。`;
+}
+
 function updateFileSelection() {
   const files = Array.from(fileInput.files || []);
   if (!files.length) {
-    fileSelection.textContent = "单个文件不超过 20 兆字节。";
+    fileSelection.textContent = fileSelectionHint();
     fileSelection.className = "form-hint";
     return;
   }
   const total = files.reduce((sum, file) => sum + file.size, 0);
   const summary = `${files.length} 个文件 · 共 ${formatFileSize(total)}`;
-  const oversized = files.filter((file) => file.size > MAX_FILE_SIZE);
+  const oversized = files.filter((file) => file.size > maxFileSize);
   if (oversized.length) {
     fileSelection.textContent = `${summary}；${oversized
       .map((file) => file.name)
-      .join("、")} 超过 20 兆字节`;
+      .join("、")} 超过 ${formatFileSize(maxFileSize)}`;
     fileSelection.className = "form-hint error-message";
     return;
   }
@@ -1206,9 +1217,9 @@ async function uploadFiles(courseId, event) {
     setUploadMessage("资料标题不能为空。", true);
     return;
   }
-  const oversized = files.find((file) => file.size > MAX_FILE_SIZE);
+  const oversized = files.find((file) => file.size > maxFileSize);
   if (oversized) {
-    setUploadMessage(`${oversized.name} 超过 20 兆字节。`, true);
+    setUploadMessage(`${oversized.name} 超过 ${formatFileSize(maxFileSize)}。`, true);
     return;
   }
 

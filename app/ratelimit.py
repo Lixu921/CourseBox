@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from starlette.requests import Request
 
+from app.config import get_settings
+
 WINDOW_SECONDS = 60
 # 健康检查会被监控高频轮询，计入配额反而会让监控自己把站点刷到限流。
 EXEMPT_PATHS = frozenset({"/接口/健康", "/api/health"})
@@ -69,5 +71,23 @@ def reset_rate_limits() -> None:
     rate_limiter.reset()
 
 
-def client_key(request: Request) -> str:
+def client_ip(request: Request) -> str:
+    """解析真实客户端 IP。
+
+    反向代理（Render、Nginx 等）后面，`request.client.host` 是代理地址，所有访客会被
+    算成同一个人：限流退化成全局共享，登录失败锁定也会误伤全体。开启
+    `COURSEBOX_TRUST_PROXY` 后改取 `X-Forwarded-For` 最左段作为原始客户端。
+
+    默认不信任该头——直连部署时它可被客户端伪造，信任反而给出一条绕过限流的捷径。
+    """
+
+    if get_settings().trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
     return request.client.host if request.client else "unknown"
+
+
+def client_key(request: Request) -> str:
+    return client_ip(request)

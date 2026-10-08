@@ -691,3 +691,41 @@ def test_purge_expired_sessions_removes_only_expired(tmp_path, monkeypatch):
     remaining = [row[0] for row in connection.execute("SELECT token_hash FROM sessions")]
     assert remaining == ["live"]
     connection.close()
+
+
+def test_login_lockout_uses_forwarded_for_when_trusted(tmp_path, monkeypatch):
+    """信任代理时，登录失败锁定要按真实来源 IP 计，而不是所有访客共用一个代理 IP。
+
+    否则一个来源对某账号失败若干次，就能把该账号对所有人一起锁死。
+    """
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_LOGIN_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("COURSEBOX_LOGIN_LOCKOUT_SECONDS", "60")
+    monkeypatch.setenv("COURSEBOX_TRUST_PROXY", "true")
+
+    from app.db import init_db
+
+    init_db()
+    wrong = {"username": "admin", "password": "wrong-pass"}
+    for _ in range(3):
+        client.post(
+            "/接口/登录", json=wrong, headers={"X-Forwarded-For": "10.0.0.1"}
+        )
+
+    # 该来源已被锁定：即使密码正确也拿 429。
+    blocked = client.post(
+        "/接口/登录",
+        json={"username": "admin", "password": "admin12345"},
+        headers={"X-Forwarded-For": "10.0.0.1"},
+    )
+    assert blocked.status_code == 429
+
+    # 另一个来源不受影响。
+    fresh = client.post(
+        "/接口/登录",
+        json={"username": "admin", "password": "admin12345"},
+        headers={"X-Forwarded-For": "10.0.0.2"},
+    )
+    assert fresh.status_code == 200

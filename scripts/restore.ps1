@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Backup,
+    [string]$Uploads,
     [switch]$Force
 )
 
@@ -10,6 +11,8 @@ Set-Location -LiteralPath $projectRoot
 
 $database = if ($env:COURSEBOX_DB) { $env:COURSEBOX_DB } else { "data/coursebox.db" }
 $databasePath = [System.IO.Path]::GetFullPath($database)
+$uploadDirectory = if ($env:COURSEBOX_UPLOAD_DIR) { $env:COURSEBOX_UPLOAD_DIR } else { "uploads" }
+$uploadsPath = [System.IO.Path]::GetFullPath($uploadDirectory)
 $backupPath = [System.IO.Path]::GetFullPath($Backup)
 if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
     throw "Backup file does not exist: $backupPath"
@@ -41,3 +44,18 @@ if (Test-Path -LiteralPath $databasePath -PathType Leaf) {
 }
 Copy-Item -LiteralPath $backupPath -Destination $databasePath -Force
 Write-Output $databasePath
+
+if ($Uploads) {
+    # 上传目录归档（uploads-<时间戳>.zip）默认也随备份产出，恢复时一并还原，
+    # 否则只还原数据库会指向一堆已经不在磁盘上的文件。
+    $uploadsBackupPath = [System.IO.Path]::GetFullPath($Uploads)
+    if (-not (Test-Path -LiteralPath $uploadsBackupPath -PathType Leaf)) {
+        throw "Uploads backup file does not exist: $uploadsBackupPath"
+    }
+    if ((Test-Path -LiteralPath $uploadsPath) -and -not $Force) {
+        throw "Upload directory exists. Use -Force to extract into it."
+    }
+    New-Item -ItemType Directory -Path $uploadsPath -Force | Out-Null
+    Expand-Archive -LiteralPath $uploadsBackupPath -DestinationPath $uploadsPath -Force
+    Write-Output $uploadsPath
+}

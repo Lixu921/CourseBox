@@ -25,7 +25,8 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v1 初始表结构（courses / files / users / sessions / audit_logs / login_attempts）
 #   v2 files 补 mime_type / sha256 / status / uploaded_by
 #   v3 files 补 deleted_at / deleted_by（回收站），users 补 is_active
-SCHEMA_VERSION = 3
+#   v4 files 补 upload_time / size 排序索引
+SCHEMA_VERSION = 4
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -115,6 +116,9 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
             CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON files(uploaded_by);
             CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at);
+            -- 列表与搜索默认按上传时间、大小排序，加索引避免全表 filesort。
+            CREATE INDEX IF NOT EXISTS idx_files_upload_time ON files(upload_time);
+            CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
             CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);

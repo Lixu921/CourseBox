@@ -1,4 +1,8 @@
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from conftest import create_client, login_admin
 from fastapi.testclient import TestClient
@@ -426,3 +430,159 @@ def test_old_database_is_upgraded_and_version_bumped(tmp_path, monkeypatch):
     )
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     connection.close()
+
+
+def test_api_docs_render_without_csp_blocking():
+    """接口文档是 FastAPI 自带的 Swagger/ReDoc，靠 CDN 脚本与内联初始化脚本工作。
+
+    全站 PAGE_CSP 是 script-src 'self'，会把两者都拦掉、页面白屏；文档前缀必须用
+    允许 CDN 与内联的专用策略，而普通页面仍保持收紧。
+    """
+
+    client = create_client()
+
+    swagger = client.get("/接口文档")
+    assert swagger.status_code == 200
+    csp = swagger.headers["Content-Security-Policy"]
+    assert "https://cdn.jsdelivr.net" in csp
+    assert "'unsafe-inline'" in csp
+    assert "cdn.jsdelivr.net" in swagger.text
+
+    redoc = client.get("/接口说明")
+    assert redoc.status_code == 200
+    assert "https://cdn.jsdelivr.net" in redoc.headers["Content-Security-Policy"]
+
+    homepage = client.get("/")
+    page_csp = homepage.headers["Content-Security-Policy"]
+    assert "cdn.jsdelivr.net" not in page_csp
+    assert "'unsafe-inline'" not in page_csp
+
+
+def test_docs_can_be_disabled(tmp_path):
+    environment = dict(os.environ)
+    environment["COURSEBOX_DB"] = str(tmp_path / "docs.db")
+    environment["COURSEBOX_UPLOAD_DIR"] = str(tmp_path / "uploads")
+    environment["COURSEBOX_ENABLE_DOCS"] = "false"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import app.main as m; print(m.app.docs_url, m.app.redoc_url, m.app.openapi_url)",
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "None None None"
+
+
+def test_health_check_does_not_leak_error_details(tmp_path, monkeypatch):
+    client = TestClient(app, raise_server_exceptions=False)
+    upload_path = tmp_path / "upload-file"
+    # 用一个「同名的普通文件」让上传目录检查失败，异常原文里会带出这个路径。
+    upload_path.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "health.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(upload_path))
+
+    from app.db import init_db
+
+    init_db()
+    response = client.get("/接口/健康")
+
+    assert response.status_code == 503
+    message = response.json()["checks"]["uploads"]["message"]
+    assert "upload-file" not in message
+    assert str(tmp_path) not in message
+
+
+def test_health_alias_is_available():
+    client = create_client()
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["app"] == "CourseBox"
+
+
+def test_oversized_request_is_rejected_before_parsing(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_MAX_REQUEST_BYTES", "100")
+    client = create_client()
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    course = client.post("/接口/课程", json={"name": "Big"}).json()
+
+    response = client.post(
+        f"/接口/课程/{course['id']}/资料",
+        data={"title": "too big"},
+        files={"file": ("big.txt", b"x" * 5000, "text/plain")},
+    )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+    # 413 也要带 request_id 与安全头（中间件注册顺序）。
+    assert response.headers["X-Request-ID"]
+    assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
+
+
+def test_files_sort_indexes_are_created(tmp_path, monkeypatch):
+    import sqlite3
+
+    from app.db import init_db
+
+    database = tmp_path / "index.db"
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    init_db()
+
+    connection = sqlite3.connect(database)
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+    connection.close()
+    assert {"idx_files_upload_time", "idx_files_size"} <= names
+
+
+def test_rate_limit_uses_forwarded_for_when_trusted(monkeypatch):
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("COURSEBOX_TRUST_PROXY", "true")
+    client = create_client()
+
+    # 不同来源 IP 各自计数，互不影响。
+    assert (
+        client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.1"}).status_code
+        == 200
+    )
+    assert (
+        client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.2"}).status_code
+        == 200
+    )
+    # 同一来源第二次即超限。
+    assert (
+        client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.1"}).status_code
+        == 429
+    )
+
+
+def test_rate_limit_ignores_forwarded_for_by_default(monkeypatch):
+    monkeypatch.setenv("COURSEBOX_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.delenv("COURSEBOX_TRUST_PROXY", raising=False)
+    client = create_client()
+
+    # 不信任代理时，X-Forwarded-For 被忽略，两个「不同 IP」其实共用一个桶。
+    assert (
+        client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.1"}).status_code
+        == 200
+    )
+    assert (
+        client.get("/接口/课程", headers={"X-Forwarded-For": "10.0.0.2"}).status_code
+        == 429
+    )

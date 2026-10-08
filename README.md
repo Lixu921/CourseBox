@@ -70,7 +70,7 @@ CourseBox/
 │  ├─ backup.py         # 计划任务入口，等价于 py -m app.backup
 │  ├─ db_check.py       # 备份完整性校验
 │  └─ restore.ps1       # 备份校验和恢复
-├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest（3.13 腿带覆盖率门槛）
+├─ .github/workflows/   # GitHub Actions：ruff 检查 + pytest（3.14 腿带覆盖率门槛）
 ├─ .dockerignore        # 容器构建忽略清单
 ├─ .env.example         # 环境配置示例
 ├─ .gitignore           # 排除 data/、uploads/、backups/ 等
@@ -80,9 +80,11 @@ CourseBox/
 ├─ README.md            # 项目说明（本文件）
 ├─ TASKBOOK.md          # 开工时的原始任务书（正文属历史，见其中的「现状注记」）
 ├─ TASKBOOK_OPTIMIZATION.md  # 各轮优化的完成记录
+├─ TASKBOOK_ROUND7.md   # 第七轮（复审加固）任务书
 ├─ pyproject.toml       # 项目元数据、pytest、Ruff 与覆盖率配置
 ├─ render.yaml          # Render 部署配置
-├─ requirements.txt     # 运行与开发依赖
+├─ requirements.txt     # 运行时依赖
+├─ requirements-dev.txt # 测试与静态检查依赖（-r requirements.txt）
 ├─ data/                # 本地 SQLite 数据库，不提交到 Git
 ├─ uploads/             # 上传文件，不提交到 Git
 └─ backups/             # 备份输出目录，不提交到 Git
@@ -90,13 +92,21 @@ CourseBox/
 
 ## 环境要求
 
-- Python 3.11 及以上（本地在 3.14 上验证，CI 覆盖 3.11 / 3.12 / 3.13）
+- Python 3.11 及以上（本地在 3.14 上验证，CI 覆盖 3.11 / 3.12 / 3.13 / 3.14）
 - Windows 环境建议使用 `py` 命令
 
 ## 安装依赖
 
+只运行服务：
+
 ```powershell
 py -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+```
+
+要跑测试和静态检查，装开发依赖（它已经包含运行时依赖）：
+
+```powershell
+py -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements-dev.txt
 ```
 
 如果本机代理导致安装失败，可以在该命令前临时设置 `NO_PROXY=*`，不要修改系统代理配置。
@@ -111,7 +121,7 @@ $env:COURSEBOX_UPLOAD_DIR = "uploads"
 $env:COURSEBOX_ADMIN_PASSWORD = "请替换为至少 8 位密码"
 ```
 
-支持的主要配置包括数据库路径、上传目录、单文件大小、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。完整列表见 `.env.example`。
+支持的主要配置包括数据库路径、上传目录、单文件大小、请求体上限、允许扩展名、最低可用磁盘空间、日志级别、监听地址和端口。前面有反向代理时设 `COURSEBOX_TRUST_PROXY=true`，让限流与登录锁定按 `X-Forwarded-For` 区分访客；生产环境可用 `COURSEBOX_ENABLE_DOCS=false` 关闭接口文档。完整列表见 `.env.example`。
 
 ## 启动项目
 
@@ -155,15 +165,15 @@ py -m ruff check .
 py -m pytest -q
 ```
 
-测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 119 个用例，覆盖健康检查、页面路由与错误响应、限流、课程增删改查与分页、资料上传下载预览、重复检测、搜索与命中字段、登录会话与自助改密、回收站（含批量）、打包下载、批量操作、审计日志、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
+测试按域拆成 13 个文件（公共夹具在 `tests/conftest.py`），共 133 个用例，覆盖健康检查、页面路由与错误响应、限流、接口文档 CSP、请求体上限、课程增删改查与分页、资料上传下载预览、重复检测、搜索与命中字段、登录会话与自助改密、反向代理下的来源识别、回收站（含批量）、打包下载、批量操作、审计日志、CSV 导出、维护与备份轮转，另有一个用例专门校验前端 `fetch` 与后端路由的一致性。
 
-仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13 上先跑 `ruff check .` 再跑 `pytest`；其中 3.13 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
+仓库自带 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Python 3.11/3.12/3.13/3.14 上先跑 `ruff check .` 再跑 `pytest`；其中 3.14 那条腿额外统计覆盖率并要求不低于 90%（`--cov-fail-under=90`）。推送或提交 PR 时自动执行。
 
 ## 部署与运维
 
 生产环境建议使用反向代理提供 HTTPS，并将 `COURSEBOX_HOST` 设置为 `127.0.0.1`，仅由反向代理访问 Uvicorn。生产环境必须显式设置 `COURSEBOX_ADMIN_PASSWORD`（至少 8 位），否则应用拒绝启动。应用会在请求完成时输出一行 JSON 日志，包含事件、请求 ID、方法、路径、状态码和耗时；发生未处理异常时会记录堆栈，但 API 只向客户端返回通用错误信息。
 
-健康检查地址为 `/接口/健康`。响应会分别检查数据库完整性、上传目录可写性和磁盘剩余空间；任一检查失败时返回 HTTP 503。监控应同时关注 HTTP 状态码和响应中的 `checks` 字段。
+健康检查地址为 `/接口/健康`（ASCII 别名 `/api/health`，`render.yaml` 用它做平台健康检查）。响应会分别检查数据库完整性、上传目录可写性和磁盘剩余空间；任一检查失败时返回 HTTP 503。为避免泄露服务器路径，失败原因只写日志，响应里给通用中文提示。监控应同时关注 HTTP 状态码和响应中的 `checks` 字段。
 
 审计日志、登录失败记录、过期会话与回收站按保留期自动清理（启动时清理一次），默认审计日志保留 90 天（`COURSEBOX_AUDIT_RETENTION_DAYS`）。也可以手动执行：
 
@@ -184,10 +194,12 @@ py scripts\backup.py --destination backups --keep 7
 
 `--keep` 表示保留最近 N 组备份（每组包含数据库和上传归档），更旧的会被自动删除；`--keep 0` 表示全部保留，`--no-uploads` 表示只备份数据库。默认输出目录为项目下的 `backups/`（可用 `COURSEBOX_BACKUP_DIR` 覆盖），默认保留份数取 `COURSEBOX_BACKUP_KEEP`（默认 7）。
 
-恢复前先停止应用，恢复脚本会校验备份完整性；覆盖已有数据库时显式使用 `-Force`，并自动保存一个 `.before-restore` 文件：
+恢复前先停止应用，恢复脚本会校验备份完整性；覆盖已有数据库时显式使用 `-Force`，并自动保存一个 `.before-restore` 文件。备份里的上传归档用 `-Uploads` 一并还原：
 
 ```powershell
 .\scripts\restore.ps1 -Backup .\backups\coursebox-20260908-120000.db -Force
+.\scripts\restore.ps1 -Backup .\backups\coursebox-20260908-120000.db `
+    -Uploads .\backups\uploads-20260908-120000.zip -Force
 ```
 
 ### 注册定时备份
@@ -226,6 +238,9 @@ Linux/macOS 用 cron 每天 3 点执行，保留最近 7 组：
 - **数据库迁移是手写的 `ALTER`。** 加列靠 `PRAGMA table_info` 判断后再补，当前结构版本记在 `PRAGMA user_version`（见 `app/db.py` 的 `SCHEMA_VERSION`）。没有引入 Alembic 之类的迁移框架，规模明显增长前够用。
 - **前端是单个 `app.js`。** 没有构建链、没有模块化——这是刻意的（不引入 node/npm 与 CDN，保证离线可用）。前后端接口的一致性由 `tests/test_frontend_contract.py` 兜底，代价是文件较长、阅读成本偏高。
 - **接口文档的中文化在 `app/main.py` 里做后处理。** 生成 OpenAPI 之后再替换中文标题，所以给模型改名时中文名会静默退回英文，且不会有测试报错。
+- **请求体上限依赖 `Content-Length`。** 应用只在这个头上做前置拦截；分块传输（`Transfer-Encoding: chunked`，不带长度）绕得过去，生产环境应再由反向代理限制请求体大小。
+- **代理来源识别要显式开启。** 默认不信任 `X-Forwarded-For`（直连时它能被伪造、用来绕过限流）；反向代理部署需设 `COURSEBOX_TRUST_PROXY=true`，否则限流与登录锁定会退化成按代理 IP 计数。
+- **接口文档默认开启。** `/接口文档`、`/接口说明`、`/接口定义` 对外可访问；关闭用 `COURSEBOX_ENABLE_DOCS=false`，此时需自行为 Swagger/ReDoc 页面设置允许 CDN 的 CSP（当前实现会给这两个前缀下发专用策略）。
 
 ## 截图
 

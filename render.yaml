@@ -5,10 +5,12 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /
+    healthCheckPath: /api/health
     envVars:
       - key: COURSEBOX_ENV
         value: production
+      - key: COURSEBOX_TRUST_PROXY
+        value: "true"
       - key: COURSEBOX_ADMIN_USERNAME
         value: admin
       - key: COURSEBOX_ADMIN_PASSWORD

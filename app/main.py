@@ -72,7 +72,7 @@ def configure_logging() -> None:
 configure_logging()
 
 # 配置错误（例如生产环境缺少管理员密码）必须在这里直接抛出，不能带着默认密码启动。
-get_settings()
+initial_settings = get_settings()
 
 # 建表与迁移是幂等的，也不删任何磁盘文件，留在导入时执行没有副作用。
 init_db()
@@ -111,10 +111,13 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(
     title="CourseBox 课盒子",
-    docs_url="/接口文档",
-    redoc_url="/接口说明",
-    openapi_url="/接口定义",
-    swagger_ui_oauth2_redirect_url="/接口文档/授权回调",
+    # 生产环境可用 COURSEBOX_ENABLE_DOCS=false 关闭接口文档与 OpenAPI 定义。
+    docs_url="/接口文档" if initial_settings.enable_docs else None,
+    redoc_url="/接口说明" if initial_settings.enable_docs else None,
+    openapi_url="/接口定义" if initial_settings.enable_docs else None,
+    swagger_ui_oauth2_redirect_url=(
+        "/接口文档/授权回调" if initial_settings.enable_docs else None
+    ),
     lifespan=lifespan,
 )
 app.include_router(courses_router)
@@ -154,6 +157,21 @@ PAGE_CSP = (
     "object-src 'none'; "
     "base-uri 'self'; "
     "form-action 'self'; "
+    "frame-ancestors 'self'"
+)
+
+# 接口文档（Swagger UI / ReDoc）是 FastAPI 自带页面：脚本与样式来自 CDN，且含一段内联
+# 初始化脚本。用 PAGE_CSP 会把两者都拦掉、页面白屏，所以这两个前缀改用下面的策略。
+DOCS_PATH_PREFIXES = ("/接口文档", "/接口说明")
+DOCS_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "worker-src 'self' blob:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
     "frame-ancestors 'self'"
 )
 
@@ -199,14 +217,59 @@ async def rate_limit_middleware(request: Request, call_next):
 
 
 @app.middleware("http")
+async def request_size_limit_middleware(request: Request, call_next):
+    """在解析请求体之前挡掉超大上传。
+
+    Starlette 会先把整个 multipart body 落盘、再进入端点，端点的 413 来得太晚，
+    超大文件已经消耗了磁盘与带宽。这里只认 Content-Length：超限的请求根本不进入
+    端点。分块传输（没有该头）仍需反向代理兜底，见 README「已知局限」。
+
+    注册次序在 security_headers_middleware 之前，这样它返回的 413 也会经过安全头
+    中间件；request_id 由更外层的 request_logging_middleware 补上。
+    """
+
+    limit = get_settings().max_request_bytes
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        request_id = getattr(request.state, "request_id", "")
+        logger.warning(
+            "request body too large",
+            extra={
+                "event": "payload_too_large",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+            },
+        )
+        message = "请求内容过大"
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "code": "payload_too_large",
+                    "message": message,
+                    "request_id": request_id,
+                },
+                "detail": message,
+            },
+        )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     for name, value in SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
     # CSP 只加给 HTML 页面：文件下载与预览各自带媒体类型，加 CSP 可能干扰
-    # 浏览器内置的 PDF/图片查看器。
+    # 浏览器内置的 PDF/图片查看器。接口文档用允许 CDN 的专用策略，否则会白屏。
     if response.headers.get("content-type", "").startswith("text/html"):
-        response.headers.setdefault("Content-Security-Policy", PAGE_CSP)
+        csp = (
+            DOCS_CSP
+            if request.url.path.startswith(DOCS_PATH_PREFIXES)
+            else PAGE_CSP
+        )
+        response.headers.setdefault("Content-Security-Policy", csp)
     # 生产环境一律加 HSTS；http 源下浏览器会忽略它，本地开发不受影响。
     if get_settings().is_production:
         response.headers.setdefault(
@@ -473,6 +536,7 @@ def course_page():
     return render_page("course.html")
 
 
+@app.get("/api/health", include_in_schema=False)
 @app.get(
     "/接口/健康",
     summary="健康检查",
@@ -518,11 +582,14 @@ def check_database() -> dict:
             return {"status": "error", "message": "数据库结构未初始化"}
         return {"status": "ok"}
     except (OSError, sqlite3.Error) as error:
+        # 健康检查是公开接口，不能把异常原文（可能含数据库路径）返回给调用方；
+        # 细节只写进结构化日志。
         logger.warning(
-            "database health check failed",
+            "database health check failed: %s",
+            error,
             extra={"event": "health_check", "request_id": None},
         )
-        return {"status": "error", "message": str(error)}
+        return {"status": "error", "message": "数据库健康检查失败"}
     finally:
         if connection is not None:
             connection.close()
@@ -543,7 +610,12 @@ def check_uploads_directory() -> dict:
         if not path.is_dir():
             return {"status": "error", "message": "上传目录不是文件夹"}
     except OSError as error:
-        return {"status": "error", "message": str(error)}
+        logger.warning(
+            "uploads directory check failed: %s",
+            error,
+            extra={"event": "health_check", "request_id": None},
+        )
+        return {"status": "error", "message": "上传目录不可用"}
 
     try:
         probe = tempfile.NamedTemporaryFile(
@@ -552,7 +624,12 @@ def check_uploads_directory() -> dict:
         probe_path = Path(probe.name)
         probe.close()
     except OSError as error:
-        return {"status": "error", "message": str(error)}
+        logger.warning(
+            "uploads probe failed: %s",
+            error,
+            extra={"event": "health_check", "request_id": None},
+        )
+        return {"status": "error", "message": "上传目录不可写"}
 
     try:
         probe_path.unlink(missing_ok=True)
@@ -578,7 +655,12 @@ def check_disk_space() -> dict:
             "minimum_free_bytes": settings.min_free_space,
         }
     except OSError as error:
-        return {"status": "error", "message": str(error)}
+        logger.warning(
+            "disk space check failed: %s",
+            error,
+            extra={"event": "health_check", "request_id": None},
+        )
+        return {"status": "error", "message": "磁盘空间检查失败"}
 
 
 def localized_openapi():

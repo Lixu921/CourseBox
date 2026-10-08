@@ -32,6 +32,13 @@ DEFAULT_RATE_LIMIT_PER_MINUTE = 300
 # 单次 CSV 导出的行数上限。超过就报错让用户先用筛选条件缩小范围，
 # 而不是悄悄截断——被截断的清单最危险的地方是它看起来是完整的。
 DEFAULT_EXPORT_MAX_ROWS = 5000
+# 是否信任 X-Forwarded-For。默认关闭：直连部署时该头可被客户端伪造，一旦信任
+# 就能用假 IP 绕过限流。只有确定前面有反向代理（如 Render）时才开启。
+DEFAULT_TRUST_PROXY = False
+# 接口文档（/接口文档、/接口说明）默认开启；生产环境可关闭，减少暴露面。
+DEFAULT_ENABLE_DOCS = True
+# 请求体上限相对单文件上限预留的余量：正文是 multipart，除文件本身还有边界与表单字段。
+DEFAULT_REQUEST_OVERHEAD = 1024 * 1024
 
 logger = logging.getLogger("coursebox.config")
 
@@ -217,6 +224,9 @@ class Settings:
     rate_limit_enabled: bool
     rate_limit_per_minute: int
     export_max_rows: int
+    trust_proxy: bool
+    enable_docs: bool
+    max_request_bytes: int
 
     @property
     def is_production(self) -> bool:
@@ -234,10 +244,11 @@ def get_settings() -> Settings:
     )
     environment = os.getenv("COURSEBOX_ENV", DEFAULT_ENV).strip().lower() or DEFAULT_ENV
     is_production = environment in PRODUCTION_ENVS
+    max_file_size = _positive_int("COURSEBOX_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE)
     return Settings(
         database_path=_path_from_env("COURSEBOX_DB", DEFAULT_DB_PATH),
         uploads_path=_path_from_env("COURSEBOX_UPLOAD_DIR", DEFAULT_UPLOADS_PATH),
-        max_file_size=_positive_int("COURSEBOX_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE),
+        max_file_size=max_file_size,
         allowed_extensions=_extensions_from_env(),
         admin_username=admin_username,
         admin_password=_admin_password(is_production),
@@ -276,5 +287,11 @@ def get_settings() -> Settings:
         ),
         export_max_rows=_positive_int(
             "COURSEBOX_EXPORT_MAX_ROWS", DEFAULT_EXPORT_MAX_ROWS
+        ),
+        trust_proxy=_bool_from_env("COURSEBOX_TRUST_PROXY", DEFAULT_TRUST_PROXY),
+        enable_docs=_bool_from_env("COURSEBOX_ENABLE_DOCS", DEFAULT_ENABLE_DOCS),
+        max_request_bytes=_positive_int(
+            "COURSEBOX_MAX_REQUEST_BYTES",
+            max_file_size + DEFAULT_REQUEST_OVERHEAD,
         ),
     )
