@@ -618,3 +618,76 @@ def test_renewal_never_passes_absolute_lifetime_cap(tmp_path, monkeypatch):
     # 剩余不到 2 天，而不是被续成满 7 天——说明绝对上限确实压住了续期。
     assert 0 < remaining < 2
     connection.close()
+
+
+def test_invalid_cookie_does_not_write_to_database(tmp_path, monkeypatch):
+    """无效 Cookie 不该在读路径上写库。
+
+    以前 find_session_user 查不到会话时会顺手删一遍过期的 sessions——而无效 Cookie
+    是外部随便就能构造的，等于把一个写操作暴露给了任何请求。现在过期会话改由启动
+    维护和 `py -m app.maintenance` 清理。
+    """
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import configure_connection, init_db
+
+    init_db()
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    connection.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES ('ghost', 'x', 'viewer')"
+    )
+    user_id = connection.execute(
+        "SELECT id FROM users WHERE username = 'ghost'"
+    ).fetchone()[0]
+    # 一条已经过期的会话，充当「有没有偷偷写库」的哨兵。
+    connection.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at)"
+        " VALUES (?, 'expired-token-hash', datetime('now', '-1 day'))",
+        (user_id,),
+    )
+    connection.commit()
+
+    client = create_client()
+    # 把无效 Cookie 设在客户端上（逐请求传 cookies= 已被 httpx 标记为弃用）。
+    client.cookies.set("coursebox_session", "not-a-real-token")
+    response = client.get("/接口/当前用户")
+    assert response.status_code == 401
+
+    # 过期会话仍在原处：这次请求没有顺手删库。
+    assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    connection.close()
+
+
+def test_purge_expired_sessions_removes_only_expired(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+
+    from app.db import configure_connection, init_db, purge_expired_sessions
+
+    init_db()
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    connection.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES ('u', 'x', 'viewer')"
+    )
+    user_id = connection.execute("SELECT id FROM users WHERE username = 'u'").fetchone()[0]
+    connection.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at)"
+        " VALUES (?, 'stale', datetime('now', '-1 day'))",
+        (user_id,),
+    )
+    connection.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at)"
+        " VALUES (?, 'live', datetime('now', '+1 day'))",
+        (user_id,),
+    )
+    connection.commit()
+
+    assert purge_expired_sessions(connection) == 1
+    remaining = [row[0] for row in connection.execute("SELECT token_hash FROM sessions")]
+    assert remaining == ["live"]
+    connection.close()

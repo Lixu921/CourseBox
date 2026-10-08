@@ -19,6 +19,14 @@ logger = logging.getLogger("coursebox")
 # 已解锁的登录失败记录保留一天，够用来累计连续失败又不至于无限堆积。
 LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 
+# 库结构版本，记在 SQLite 自带的 PRAGMA user_version 里。任何改表动作（加列、加索引、
+# 改约束）都要 +1，并在 migrate_schema 里登记对应步骤。有了它，拿到一个库文件就能直接
+# 问出「升到第几版」，不用靠 PRAGMA table_info 一条条猜。
+#   v1 初始表结构（courses / files / users / sessions / audit_logs / login_attempts）
+#   v2 files 补 mime_type / sha256 / status / uploaded_by
+#   v3 files 补 deleted_at / deleted_by（回收站），users 补 is_active
+SCHEMA_VERSION = 3
+
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
     close_connection = connection is None
@@ -97,8 +105,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
             );
             """
         )
-        migrate_files_table(connection)
-        migrate_users_table(connection)
+        migrate_schema(connection)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_courses_name ON courses(name);
@@ -178,7 +185,26 @@ def configure_connection(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA journal_mode = WAL")
 
 
+def migrate_schema(connection: sqlite3.Connection) -> None:
+    """把老库补齐到 SCHEMA_VERSION，并把版本号写回 PRAGMA user_version。
+
+    各步迁移本身是幂等的（靠 PRAGMA table_info 判断列是否已存在），所以中途失败、
+    下次重跑也安全；这里额外做的事只是让「库升到第几版」变得可查。
+    新库由上面的 CREATE TABLE 一次建到最新结构，跑到这里时迁移全是空操作，只写版本号。
+    """
+
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+    migrate_files_table(connection)
+    migrate_users_table(connection)
+    # PRAGMA 不支持占位符参数，只能拼进语句；值来自本模块的整数常量，不含外部输入。
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")  # noqa: S608
+
+
 def migrate_files_table(connection: sqlite3.Connection) -> None:
+    """给老库的 files 表补上后加的列，历史行取各列的默认值。"""
+
     columns = {
         row[1] for row in connection.execute("PRAGMA table_info(files)").fetchall()
     }
@@ -325,6 +351,21 @@ def clear_login_failures(
         (username, client_ip),
     )
     connection.commit()
+
+
+def purge_expired_sessions(connection: sqlite3.Connection) -> int:
+    """删掉已过期的会话，返回清理条数。
+
+    只放在维护任务里执行（启动维护与 `py -m app.maintenance`）。以前这步挂在
+    find_session_user 上，任何带无效 Cookie 的请求都会顺手删一遍会话表——无效
+    Cookie 是外部随便构造的，等于把一个写操作暴露给了读路径。
+    """
+
+    cursor = connection.execute(
+        "DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP"
+    )
+    connection.commit()
+    return cursor.rowcount or 0
 
 
 def purge_login_attempts(connection: sqlite3.Connection, keep_seconds: int) -> int:

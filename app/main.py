@@ -36,6 +36,7 @@ from app.db import (
     init_db,
     purge_audit_logs,
     purge_deleted_files,
+    purge_expired_sessions,
     purge_login_attempts,
 )
 from app.ratelimit import EXEMPT_PATHS, client_key, rate_limiter
@@ -93,6 +94,8 @@ def run_startup_maintenance() -> None:
         settings = get_settings()
         purge_audit_logs(connection, settings.audit_retention_days)
         purge_login_attempts(connection, LOGIN_ATTEMPT_RETENTION_SECONDS)
+        # 过期会话只在这里和 py -m app.maintenance 里清理，不挂在读请求上。
+        purge_expired_sessions(connection)
         # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
         # （py -m app.maintenance）覆盖长期不重启的部署。
         purge_deleted_files(connection, settings.trash_retention_days)

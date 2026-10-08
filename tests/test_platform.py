@@ -343,3 +343,86 @@ def test_error_page_escapes_detail():
     # detail 可能来自用户可控的内容，拼进 HTML 前必须转义。
     assert "<script>" not in body
     assert "&lt;script&gt;" in body
+
+
+def test_fresh_database_records_current_schema_version(tmp_path, monkeypatch):
+    """新库建完就把结构版本写进 PRAGMA user_version，方便一眼看出升到第几版。"""
+
+    import sqlite3
+
+    from app.db import SCHEMA_VERSION, init_db
+
+    database = tmp_path / "fresh.db"
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    init_db()
+
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    connection.close()
+
+
+def test_old_database_is_upgraded_and_version_bumped(tmp_path, monkeypatch):
+    """第 1 版老库跑一次 init_db 就能补齐后加的列，并把版本号写回当前值。"""
+
+    import sqlite3
+
+    from app.db import SCHEMA_VERSION, init_db
+
+    database = tmp_path / "old.db"
+    monkeypatch.setenv("COURSEBOX_DB", str(database))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    # 手工造一个「第 1 版」的库：files 没有后加的列，users 没有 is_active。
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE courses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            college TEXT,
+            semester TEXT
+        );
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            upload_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'uploader', 'viewer')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users (username, password_hash, role) VALUES ('old', 'x', 'viewer');
+        """
+    )
+    connection.commit()
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    init_db(connection)
+
+    file_columns = {row[1] for row in connection.execute("PRAGMA table_info(files)")}
+    assert {
+        "mime_type",
+        "sha256",
+        "status",
+        "uploaded_by",
+        "deleted_at",
+        "deleted_by",
+    } <= file_columns
+    user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+    assert "is_active" in user_columns
+    # 历史账号默认保持可用。
+    assert (
+        connection.execute("SELECT is_active FROM users WHERE username = 'old'").fetchone()[0]
+        == 1
+    )
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    connection.close()

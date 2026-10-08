@@ -66,8 +66,9 @@ def find_session_user(
         (token_hash,),
     ).fetchone()
     if row is None:
-        db.execute("DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP")
-        db.commit()
+        # 这里刻意不写库。无效或过期的 Cookie 是客户端可以随意构造的，让每个请求
+        # 顺手删一遍会话表，等于把写操作暴露在读路径上。过期会话改由启动维护和
+        # `py -m app.maintenance`（db.purge_expired_sessions）清理。
         return None
     # 绝对上限：滑动续期不能把一个会话无限延长下去，到点就作废、要求重新登录。
     deadline = session_hard_deadline(row["created_at"])

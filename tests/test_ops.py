@@ -225,3 +225,32 @@ def test_startup_maintenance_runs_when_app_starts(tmp_path, monkeypatch):
         pass
 
     assert not probe.exists(), "应用启动（lifespan）应该清掉过期的健康检查探针"
+
+
+def test_maintenance_purges_expired_sessions(tmp_path, monkeypatch, capsys):
+    """过期会话由维护任务清理——读请求不再顺手写库，这里守住那条替代路径。"""
+
+    import sqlite3
+
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app import maintenance
+    from app.db import configure_connection, init_db
+
+    init_db()
+
+    connection = sqlite3.connect(tmp_path / "test.db")
+    configure_connection(connection)
+    connection.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES ('u', 'x', 'viewer')"
+    )
+    connection.execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at)"
+        " VALUES (1, 'stale', datetime('now', '-1 day'))"
+    )
+    connection.commit()
+    connection.close()
+
+    assert maintenance.main() == 0
+    assert "过期会话已清理 1 条" in capsys.readouterr().out
