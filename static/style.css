@@ -612,3 +612,25 @@ body.preview-open { overflow: hidden; }
   .user-actions { width: 100%; }
   .compact-button { width: 100%; }
 }
+
+/* 课程标签：逗号分隔存的分类，展示成一排小圆角块。 */
+.course-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0;
+}
+
+.tag-chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 0.78rem;
+}
+
+.tag-chip mark {
+  background: #fde68a;
+  color: inherit;
+}

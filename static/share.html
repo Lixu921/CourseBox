@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>课程分享 · 课盒子</title>
+  <link rel="icon" href="/资源/图标.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/资源/样式.css?v={{asset_version}}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/">课盒子</a>
+      <nav class="site-nav">
+        <a href="/">首页</a>
+        <a href="#top">回到顶部</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page" id="top">
+    <section class="course-intro">
+      <h1 id="share-course-name">正在加载…</h1>
+      <p id="share-meta" class="course-context muted"></p>
+      <p id="share-message" class="form-message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="course-layout">
+      <div class="course-main">
+        <div class="section-heading">
+          <h2>资料列表</h2>
+          <span class="muted">只读分享</span>
+        </div>
+        <ul id="share-file-list" class="file-list">
+          <li class="muted">正在加载…</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/share.js"></script>
+</body>
+</html>

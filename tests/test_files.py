@@ -664,3 +664,51 @@ def test_upload_rejects_executable_content(tmp_path, monkeypatch):
         files={"file": ("real.pdf", b"%PDF-1.4\n%content", "application/pdf")},
     )
     assert ok.status_code == 201
+
+
+def test_per_user_upload_quota(tmp_path, monkeypatch):
+    """按上传者的总量上限：一个人占满自己的额度后不能再传，但不影响别人。"""
+
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("COURSEBOX_MAX_USER_BYTES", "1000")
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    first = client.post("/接口/课程", json={"name": "课程甲"}).json()
+    second = client.post("/接口/课程", json={"name": "课程乙"}).json()
+
+    assert client.post(
+        f"/接口/课程/{first['id']}/资料",
+        data={"title": "第一批"},
+        files={"file": ("a.txt", b"x" * 800, "text/plain")},
+    ).status_code == 201
+
+    quota = client.get(f"/接口/课程/{second['id']}/配额").json()
+    assert quota["user_limit"] == 1000
+    assert quota["user_used"] == 800
+    assert quota["user_remaining"] == 200
+
+    blocked = client.post(
+        f"/接口/课程/{second['id']}/资料",
+        data={"title": "超限"},
+        files={"file": ("b.txt", b"y" * 800, "text/plain")},
+    )
+    assert blocked.status_code == 413
+    assert "上传总量" in blocked.json()["error"]["message"]
+
+    # 另一个上传者的额度独立，不受影响。
+    client.post(
+        "/接口/用户",
+        json={"username": "quota2", "password": "quota2-pass", "role": "uploader"},
+    )
+    other = create_client()
+    login_user(other, "quota2", "quota2-pass")
+    assert other.post(
+        f"/接口/课程/{second['id']}/资料",
+        data={"title": "别人"},
+        files={"file": ("c.txt", b"z" * 800, "text/plain")},
+    ).status_code == 201

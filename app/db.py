@@ -27,7 +27,9 @@ LOGIN_ATTEMPT_RETENTION_SECONDS = 24 * 60 * 60
 #   v3 files 补 deleted_at / deleted_by（回收站），users 补 is_active
 #   v4 files 补 upload_time / size 排序索引
 #   v5 courses / files 补 version（编辑乐观锁）
-SCHEMA_VERSION = 5
+#   v6 courses 补 tags（逗号分隔的分类标签）
+#   v7 新增 share_links（只读分享链接）
+SCHEMA_VERSION = 7
 
 
 def init_db(connection: sqlite3.Connection | None = None) -> None:
@@ -46,7 +48,8 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 name TEXT NOT NULL,
                 college TEXT,
                 semester TEXT,
-                version INTEGER NOT NULL DEFAULT 1
+                version INTEGER NOT NULL DEFAULT 1,
+                tags TEXT
             );
 
             CREATE TABLE IF NOT EXISTS files (
@@ -106,6 +109,18 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 locked_until TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (username, client_ip)
+            );
+
+            CREATE TABLE IF NOT EXISTS share_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT NOT NULL UNIQUE,
+                course_id INTEGER NOT NULL,
+                created_by INTEGER,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
             );
             """
         )
@@ -233,7 +248,7 @@ def migrate_files_table(connection: sqlite3.Connection) -> None:
 
 
 def migrate_courses_table(connection: sqlite3.Connection) -> None:
-    """老库的 courses 补上 version 列（编辑乐观锁）。"""
+    """老库的 courses 补上 version（乐观锁）与 tags（标签）。"""
 
     columns = {
         row[1] for row in connection.execute("PRAGMA table_info(courses)").fetchall()
@@ -242,6 +257,8 @@ def migrate_courses_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE courses ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
         )
+    if "tags" not in columns:
+        connection.execute("ALTER TABLE courses ADD COLUMN tags TEXT")
 
 
 def migrate_users_table(connection: sqlite3.Connection) -> None:

@@ -11,7 +11,14 @@ from app.db import (
     restore_staged_files,
     stage_stored_files,
 )
-from app.schemas import Course, CourseCreate, CourseDetail, CoursePage, CourseUpdate
+from app.schemas import (
+    Course,
+    CourseCreate,
+    CourseDetail,
+    CoursePage,
+    CourseUpdate,
+    serialize_tags,
+)
 
 router = APIRouter(tags=["课程"])
 
@@ -28,7 +35,8 @@ def row_to_course(row: sqlite3.Row) -> Course:
     operation_id="查看课程列表",
 )
 def list_courses(
-    关键词: str = Query("", max_length=80, description="按课程名、学院或学期筛选"),
+    关键词: str = Query("", max_length=80, description="按课程名、学院、学期或标签筛选"),
+    标签: str | None = Query(None, max_length=30, description="按标签精确筛选"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: sqlite3.Connection = Depends(get_db),
@@ -38,12 +46,17 @@ def list_courses(
     keyword = 关键词.strip()
     if keyword:
         pattern = f"%{escape_like(keyword)}%"
-        # 学院/学期可能是 NULL，NULL LIKE 不成立；但这里是 OR，课程名命中仍会返回。
+        # 学院/学期/标签可能是 NULL，NULL LIKE 不成立；但这里是 OR，课程名命中仍会返回。
         conditions.append(
             "(name LIKE ? ESCAPE '\\' OR college LIKE ? ESCAPE '\\' "
-            "OR semester LIKE ? ESCAPE '\\')"
+            "OR semester LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
         )
-        params.extend([pattern, pattern, pattern])
+        params.extend([pattern, pattern, pattern, pattern])
+    tag = (标签 or "").strip()
+    if tag:
+        # 标签是逗号分隔存的，两边补逗号再匹配 `,tag,`，避免「大二」误命中「大二班」。
+        conditions.append("(',' || COALESCE(tags, '') || ',') LIKE ? ESCAPE '\\'")
+        params.append(f"%,{escape_like(tag)},%")
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     total = db.execute(
@@ -53,7 +66,7 @@ def list_courses(
     offset = (page - 1) * page_size
     rows = db.execute(
         f"""
-        SELECT id, name, college, semester, version FROM courses {where}
+        SELECT id, name, college, semester, version, tags FROM courses {where}
         ORDER BY id DESC LIMIT ? OFFSET ?
         """,  # noqa: S608 - 条件由内部白名单拼接
         (*params, page_size, offset),
@@ -75,7 +88,7 @@ def list_courses(
 def get_course(course_id: int, db: sqlite3.Connection = Depends(get_db)) -> CourseDetail:
     row = db.execute(
         """
-        SELECT c.id, c.name, c.college, c.semester, c.version,
+        SELECT c.id, c.name, c.college, c.semester, c.version, c.tags,
                COUNT(CASE WHEN f.status = 'approved' THEN f.id END) AS file_count
         FROM courses AS c
         LEFT JOIN files AS f ON f.course_id = c.id AND f.deleted_at IS NULL
@@ -107,13 +120,13 @@ def create_course(
     db: sqlite3.Connection = Depends(get_db),
 ) -> Course:
     cursor = db.execute(
-        "INSERT INTO courses (name, college, semester) VALUES (?, ?, ?)",
-        (course.name, course.college, course.semester),
+        "INSERT INTO courses (name, college, semester, tags) VALUES (?, ?, ?, ?)",
+        (course.name, course.college, course.semester, serialize_tags(course.tags)),
     )
     record_audit(db, user["id"], "create", "course", cursor.lastrowid, course.name)
     db.commit()
     row = db.execute(
-        "SELECT id, name, college, semester, version FROM courses WHERE id = ?",
+        "SELECT id, name, college, semester, version, tags FROM courses WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
     return row_to_course(row)
@@ -139,6 +152,8 @@ def update_course(
         raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
     values = course.model_dump(exclude_unset=True)
     expected_version = values.pop("version", None)
+    if "tags" in values:
+        values["tags"] = serialize_tags(values["tags"])
     if not values:
         raise HTTPException(status_code=422, detail="至少需要提供一个课程字段")
     current = db.execute(
@@ -163,7 +178,7 @@ def update_course(
         db.rollback()
         raise
     row = db.execute(
-        "SELECT id, name, college, semester, version FROM courses WHERE id = ?",
+        "SELECT id, name, college, semester, version, tags FROM courses WHERE id = ?",
         (course_id,),
     ).fetchone()
     return row_to_course(row)

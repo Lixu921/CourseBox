@@ -434,12 +434,24 @@ function courseCard(course, query) {
     semester.append(highlight(course.semester, query));
     card.append(semester);
   }
-  // 课程是按 课程名 / 学院 / 学期 三个字段 OR 匹配的，所以必须说清是哪个命中的：
+  if (course.tags && course.tags.length) {
+    const tagRow = document.createElement("p");
+    tagRow.className = "course-tags";
+    course.tags.forEach((tag) => {
+      const chip = document.createElement("span");
+      chip.className = "tag-chip";
+      chip.append(highlight(tag, query));
+      tagRow.append(chip);
+    });
+    card.append(tagRow);
+  }
+  // 课程是按 课程名 / 学院 / 学期 OR 匹配的，所以必须说清是哪个命中的：
   // 否则搜「计算机」时用户只看到课程名，完全不知道它为什么被搜出来。
   const labels = [];
   if (matchesQuery(course.name, query)) labels.push("课程名");
   if (matchesQuery(course.college, query)) labels.push("学院");
   if (matchesQuery(course.semester, query)) labels.push("学期");
+  if (matchesQuery((course.tags || []).join(" "), query)) labels.push("标签");
   const hint = matchHint(labels);
   if (hint) card.append(hint);
   return card;
@@ -709,6 +721,9 @@ function renderCourseQuota(quota) {
   }
   if (quota.site_remaining != null) {
     parts.push(`全站剩余 ${formatFileSize(quota.site_remaining)}`);
+  }
+  if (quota.user_remaining != null) {
+    parts.push(`我的上传剩余 ${formatFileSize(quota.user_remaining)}`);
   }
   uploadQuota.textContent = `${parts.join(" · ")}（当前限制：${quota.reason}）`;
   uploadQuota.hidden = false;
@@ -1005,12 +1020,17 @@ function renderCourseActions(course) {
   edit.className = "text-button";
   edit.textContent = "编辑课程";
   edit.addEventListener("click", () => editCourse(course));
+  const share = document.createElement("button");
+  share.type = "button";
+  share.className = "text-button";
+  share.textContent = "分享链接";
+  share.addEventListener("click", () => createShareLink(course));
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "text-button danger-button";
   remove.textContent = "删除课程";
   remove.addEventListener("click", () => removeCourse(course));
-  courseActions.append(edit, remove);
+  courseActions.append(edit, share, remove);
 }
 
 async function editCourse(course) {
@@ -1029,6 +1049,31 @@ async function editCourse(course) {
   courseName.textContent = currentCourse.name;
   courseContext.textContent = courseContextText(currentCourse);
   renderCourseActions(currentCourse);
+}
+
+async function createShareLink(course) {
+  const answer = window.prompt("分享链接有效期（天，1-90）", "7");
+  if (answer === null) return;
+  const days = Number(answer);
+  if (!Number.isInteger(days) || days < 1 || days > 90) {
+    window.alert("请输入 1 到 90 之间的整数。");
+    return;
+  }
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(course.id)}/share`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days }),
+    }
+  );
+  if (!response.ok) {
+    window.alert(await readError(response, "创建分享链接失败。"));
+    return;
+  }
+  const data = await response.json();
+  const url = new URL(data.url, window.location.origin).href;
+  window.prompt("分享链接已创建（Ctrl+C 复制）：", url);
 }
 
 async function removeCourse(course) {

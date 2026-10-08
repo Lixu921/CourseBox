@@ -25,6 +25,7 @@ from app.api.auth import set_session_cookie
 from app.api.courses import router as courses_router
 from app.api.files import download_router, search_router, trash_router
 from app.api.files import router as files_router
+from app.api.share import router as share_router
 from app.api.users import router as users_router
 from app.config import database_path, get_settings, uploads_path
 from app.db import (
@@ -131,6 +132,7 @@ app.include_router(trash_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(audit_router)
+app.include_router(share_router)
 
 
 class BodySizeLimitMiddleware:
@@ -392,6 +394,7 @@ def error_code(status_code: int) -> str:
         403: "forbidden",
         404: "not_found",
         409: "conflict",
+        410: "gone",
         413: "payload_too_large",
         415: "unsupported_media_type",
         422: "validation_error",
@@ -581,6 +584,12 @@ def homepage():
 @app.get("/course", include_in_schema=False)
 def course_page():
     return render_page("course.html")
+
+
+@app.get("/分享/{token}", include_in_schema=False)
+def share_page(token: str):
+    # token 由前端脚本从地址里取，这里只负责发页面。
+    return render_page("share.html")
 
 
 # 健康检查结果缓存。key 由库路径、上传目录、磁盘下限组成——测试与运行时常 monkeypatch

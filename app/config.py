@@ -22,6 +22,8 @@ DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 DEFAULT_LOGIN_LOCKOUT_SECONDS = 300
 DEFAULT_MAX_COURSE_BYTES = 500 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+# 单个上传者的资料总量上限，0 表示不限制。用于防止一个人占满全站空间。
+DEFAULT_MAX_USER_BYTES = 0
 DEFAULT_AUDIT_RETENTION_DAYS = 90
 # 回收站保留天数：删掉的资料先在这里放着，超期才真正从磁盘删除。
 DEFAULT_TRASH_RETENTION_DAYS = 30
@@ -225,6 +227,7 @@ class Settings:
     login_lockout_seconds: int
     max_course_bytes: int
     max_total_bytes: int
+    max_user_bytes: int
     audit_retention_days: int
     trash_retention_days: int
     rate_limit_enabled: bool
@@ -280,6 +283,9 @@ def get_settings() -> Settings:
         ),
         max_total_bytes=_quota_bytes(
             "COURSEBOX_MAX_TOTAL_BYTES", DEFAULT_MAX_TOTAL_BYTES
+        ),
+        max_user_bytes=_quota_bytes(
+            "COURSEBOX_MAX_USER_BYTES", DEFAULT_MAX_USER_BYTES
         ),
         audit_retention_days=_positive_int(
             "COURSEBOX_AUDIT_RETENTION_DAYS", DEFAULT_AUDIT_RETENTION_DAYS

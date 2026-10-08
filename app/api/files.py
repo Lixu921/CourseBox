@@ -125,12 +125,15 @@ def format_bytes(size: int) -> str:
     return f"{size} 字节"
 
 
-def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
+def upload_quota(
+    course_id: int, db: sqlite3.Connection, user_id: int | None = None
+) -> dict:
     """算出该课程当前的上传配额明细。
 
-    既用于上传时的超限判定，也用于上传前在界面上展示剩余空间，所以把四个上限
-    （单文件大小、课程总量、站点总量、磁盘剩余空间）全部算出来，取最紧的一条
-    作为本次允许的最大字节数——这样流式写入时只需比较一次，超限原因也准确。
+    既用于上传时的超限判定，也用于上传前在界面上展示剩余空间，所以把五个上限
+    （单文件大小、课程总量、站点总量、该上传者总量、磁盘剩余空间）全部算出来，
+    取最紧的一条作为本次允许的最大字节数——这样流式写入时只需比较一次，
+    超限原因也准确。user_id 为空时不检查「该上传者总量」。
     """
 
     settings = get_settings()
@@ -145,6 +148,13 @@ def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
         "WHERE course_id = ? AND deleted_at IS NULL",
         (course_id,),
     ).fetchone()[0]
+    used_user = 0
+    if user_id is not None and settings.max_user_bytes:
+        used_user = db.execute(
+            "SELECT COALESCE(SUM(size), 0) FROM files "
+            "WHERE uploaded_by = ? AND deleted_at IS NULL",
+            (user_id,),
+        ).fetchone()[0]
     candidates = [
         (
             settings.max_file_size,
@@ -165,6 +175,14 @@ def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
                 settings.max_course_bytes - used_course,
                 f"该课程资料总量已达上限 {format_bytes(settings.max_course_bytes)}，"
                 "请先清理旧资料",
+            )
+        )
+    if settings.max_user_bytes and user_id is not None:
+        candidates.append(
+            (
+                settings.max_user_bytes - used_user,
+                f"你的上传总量已达上限 {format_bytes(settings.max_user_bytes)}，"
+                "请先清理自己的旧资料",
             )
         )
     disk_free: int | None = None
@@ -203,14 +221,23 @@ def upload_quota(course_id: int, db: sqlite3.Connection) -> dict:
             if settings.max_total_bytes
             else None
         ),
+        "user_limit": settings.max_user_bytes or None,
+        "user_used": used_user,
+        "user_remaining": (
+            max(0, settings.max_user_bytes - used_user)
+            if settings.max_user_bytes and user_id is not None
+            else None
+        ),
         "disk_free": disk_free,
     }
 
 
-def upload_allowance(course_id: int, db: sqlite3.Connection) -> tuple[int, str]:
+def upload_allowance(
+    course_id: int, db: sqlite3.Connection, user_id: int | None = None
+) -> tuple[int, str]:
     """上传时只关心最紧的那条上限，复用 upload_quota 的结果。"""
 
-    quota = upload_quota(course_id, db)
+    quota = upload_quota(course_id, db, user_id)
     return quota["allowed_bytes"], quota["reason"]
 
 
@@ -526,7 +553,7 @@ def course_quota(
 ) -> CourseQuota:
     if not course_exists(course_id, db):
         raise HTTPException(status_code=404, detail="课程不存在")
-    return CourseQuota(**upload_quota(course_id, db))
+    return CourseQuota(**upload_quota(course_id, db, user["id"]))
 
 
 @router.post(
@@ -573,7 +600,7 @@ async def upload_course_file(
         if content_type in DANGEROUS_MIME_TYPES:
             raise HTTPException(status_code=415, detail="不允许上传可执行文件")
 
-        allowance, limit_reason = upload_allowance(course_id, db)
+        allowance, limit_reason = upload_allowance(course_id, db, user["id"])
         if allowance <= 0:
             raise HTTPException(status_code=413, detail=limit_reason)
         upload_root = uploads_path().resolve()

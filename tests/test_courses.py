@@ -85,7 +85,14 @@ def test_course_pagination_and_detail(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "items": [
-            {"id": 1, "name": "课程一", "college": None, "semester": None, "version": 1}
+            {
+                "id": 1,
+                "name": "课程一",
+                "college": None,
+                "semester": None,
+                "version": 1,
+                "tags": [],
+            }
         ],
         "total": 3,
         "page": 2,
@@ -329,3 +336,42 @@ def test_course_edit_optimistic_lock(tmp_path, monkeypatch):
         f"/接口/课程/{course['id']}", json={"name": "无版本覆盖"}
     ).status_code == 200
     assert client.get(f"/接口/课程/{course['id']}").json()["version"] == 3
+
+
+def test_course_tags(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+
+    created = client.post(
+        "/接口/课程",
+        json={"name": "高数", "tags": ["必修", "  大二  ", "必修"]},
+    ).json()
+    # 去重、去空白。
+    assert created["tags"] == ["必修", "大二"]
+    assert client.get(f"/接口/课程/{created['id']}").json()["tags"] == ["必修", "大二"]
+
+    client.post("/接口/课程", json={"name": "线代", "tags": ["选修"]})
+
+    # 标签精确筛选：整个标签相等，不做子串。
+    filtered = client.get("/接口/课程", params={"标签": "必修"}).json()
+    assert [item["id"] for item in filtered["items"]] == [created["id"]]
+    assert client.get("/接口/课程", params={"标签": "必"}).json()["total"] == 0
+
+    # 关键词也能命中标签。
+    assert client.get("/接口/课程", params={"关键词": "大二"}).json()["total"] == 1
+
+    updated = client.patch(
+        f"/接口/课程/{created['id']}",
+        json={"tags": ["选修"], "version": created["version"]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["tags"] == ["选修"]
+
+    cleared = client.patch(f"/接口/课程/{created['id']}", json={"tags": []})
+    assert cleared.json()["tags"] == []

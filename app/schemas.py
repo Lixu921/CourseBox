@@ -4,11 +4,60 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth import hash_password
 
+# 课程标签：逗号分隔存一列。给个数与长度的上限，避免标签被当成第二段描述来写。
+MAX_TAGS = 10
+MAX_TAG_LENGTH = 30
+
+
+def normalize_tags(value: object) -> list[str] | None:
+    """把标签规整成去重、去空、限长的列表；None 表示「未提供」。"""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list):
+        raise ValueError("标签必须是文本列表")
+    result: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str):
+            raise ValueError("标签必须是文本")
+        tag = raw.strip()
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(f"单个标签不能超过 {MAX_TAG_LENGTH} 个字符")
+        if tag not in result:
+            result.append(tag)
+    if len(result) > MAX_TAGS:
+        raise ValueError(f"标签最多 {MAX_TAGS} 个")
+    return result
+
+
+def serialize_tags(tags: list[str] | None) -> str | None:
+    """把标签列表拼回库里的逗号分隔格式。"""
+
+    return ",".join(tags) if tags else None
+
+
+def parse_tags(value: object) -> list[str]:
+    """把库里的逗号分隔标签读回列表。"""
+
+    if not value or not isinstance(value, str):
+        return []
+    return [tag for tag in (part.strip() for part in value.split(",")) if tag]
+
 
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     college: str | None = Field(default=None, max_length=120)
     semester: str | None = Field(default=None, max_length=80)
+    tags: list[str] | None = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def tags_are_normalized(cls, value: object) -> list[str] | None:
+        return normalize_tags(value)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -35,8 +84,14 @@ class CourseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     college: str | None = Field(default=None, max_length=120)
     semester: str | None = Field(default=None, max_length=80)
+    tags: list[str] | None = None
     # 客户端看到并基于其编辑的版本号；不传则退化为「后写覆盖」。
     version: int | None = Field(default=None, ge=1)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def tags_are_normalized(cls, value: object) -> list[str] | None:
+        return normalize_tags(value)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -213,6 +268,12 @@ class Course(BaseModel):
     semester: str | None = None
     # 编辑乐观锁：客户端带着自己看到的版本号回传，服务端比对后决定是否放行。
     version: int = 1
+    tags: list[str] = []
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def tags_are_parsed(cls, value: object) -> list[str]:
+        return parse_tags(value)
 
 
 class CourseDetail(Course):
@@ -247,6 +308,9 @@ class CourseQuota(BaseModel):
     site_limit: int | None = None
     site_used: int
     site_remaining: int | None = None
+    user_limit: int | None = None
+    user_used: int = 0
+    user_remaining: int | None = None
     disk_free: int | None = None
 
 
@@ -288,3 +352,30 @@ class AuditLog(BaseModel):
 
 class AuditLogPage(PageInfo):
     items: list[AuditLog]
+
+
+# 分享链接的有效天数上限。过期后分享页打不开，但资料本身仍是公开可读的（见 README 已知局限）。
+MAX_SHARE_DAYS = 90
+
+
+class ShareCreate(BaseModel):
+    days: int = Field(default=7, ge=1, le=MAX_SHARE_DAYS)
+    note: str | None = Field(default=None, max_length=120)
+
+
+class ShareLink(BaseModel):
+    id: int
+    token: str
+    url: str
+    note: str | None = None
+    created_at: str
+    expires_at: str
+
+
+class ShareView(BaseModel):
+    """分享页看到的内容：课程信息 + 该课程已通过的资料列表。"""
+
+    course: Course
+    files: list[dict]
+    note: str | None = None
+    expires_at: str
