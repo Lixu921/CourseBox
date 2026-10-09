@@ -19,3 +19,17 @@ services:
         value: data/coursebox.db
       - key: COURSEBOX_UPLOAD_DIR
         value: uploads
+
+    # 免费版磁盘是临时的：库与上传在重启/重新部署后会丢。
+    # 要持久化，需要把 plan 换成付费实例类型，然后取消下面注释并改路径：
+    #
+    # disk:
+    #   name: coursebox-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    #
+    # 同时把上面两个环境变量改成：
+    #   COURSEBOX_DB=/var/data/coursebox.db
+    #   COURSEBOX_UPLOAD_DIR=/var/data/uploads
+    #
+    # 详细步骤见 DEPLOY.md「Persist data」。

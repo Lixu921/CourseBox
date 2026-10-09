@@ -29,6 +29,33 @@ The free Render filesystem is temporary. Uploaded files and SQLite data can be
 lost after a restart or redeploy. Use a persistent disk or an external database
 and file store for a real production deployment.
 
+## Keep the free instance awake
+
+Render free web services spin down after ~15 minutes idle; the next request then
+waits ~50 seconds for a cold start. A scheduled GitHub Actions workflow
+(`.github/workflows/keepalive.yml`) pings `/api/health` every 10 minutes to
+reduce this. You can also point a free monitor (UptimeRobot, cron-job.org) at
+`https://<your-service>.onrender.com/api/health`.
+
+Note: GitHub pauses scheduled workflows after ~60 days of repository
+inactivity, and cron runs can be delayed by a few minutes.
+
+## Persist data (avoid losing uploads and SQLite)
+
+On the free plan the filesystem is ephemeral: the SQLite database and uploads
+are lost on restart or redeploy. To keep them, attach a Render **persistent
+disk** (disks require a paid instance type) and point the app at it:
+
+1. Upgrade the service to a paid instance type (disks are not available on free).
+2. Add a disk on the service, mount path e.g. `/var/data`.
+3. Set environment variables on the service:
+   - `COURSEBOX_DB=/var/data/coursebox.db`
+   - `COURSEBOX_UPLOAD_DIR=/var/data/uploads`
+4. Redeploy.
+
+For full control instead, run the project on your own small VPS with the bundled
+`docker-compose.yml` (named volumes already persist the database and uploads).
+
 ## Deploy with Docker
 
 ```powershell

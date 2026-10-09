@@ -1,0 +1,27 @@
+name: Keep-alive
+
+# Render 免费实例闲置约 15 分钟会休眠，下次访问要冷启动约 50 秒。
+# 这个工作流每 10 分钟访问一次健康接口，尽量让它保持唤醒。
+#
+# 注意：
+# - GitHub 的计划任务可能有几分钟延迟，且仓库长期无活动（约 60 天）后会自动停用；
+# - 保持唤醒只能减少冷启动，**不能防止免费盘数据丢失**（见 DEPLOY.md）。
+# - 如果换了部署地址，改下面的 URL 或改用 UptimeRobot / cron-job.org 之类的免费监控。
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 访问健康接口
+        run: |
+          # 冷启动可能要等一会儿，超时给到 90 秒；即使超时也不把任务判失败。
+          curl -fsS --max-time 90 https://coursebox.onrender.com/api/health \
+            || echo "唤醒请求未在 90 秒内成功（可能仍在冷启动，下一次会更快）"
