@@ -36,6 +36,7 @@ from app.db import (
     checkpoint_wal,
     cleanup_health_probes,
     cleanup_staged_files,
+    ensure_recovery_admin,
     get_db,
     init_db,
     purge_audit_logs,
@@ -105,6 +106,18 @@ def run_startup_maintenance() -> None:
         # 回收站里超过保留期的资料在这里真正从磁盘删除。放在启动时做，配合定时任务
         # （py -m app.maintenance）覆盖长期不重启的部署。
         purge_deleted_files(connection, settings.trash_retention_days)
+        # 应急管理员：配置了 COURSEBOX_RECOVERY_ADMIN_* 时，启动就确保该账号可用。
+        if settings.recovery_admin_username and settings.recovery_admin_password:
+            ensure_recovery_admin(
+                connection,
+                settings.recovery_admin_username,
+                settings.recovery_admin_password,
+            )
+            logger.warning(
+                "recovery admin ensured: %s",
+                settings.recovery_admin_username,
+                extra={"event": "recovery_admin"},
+            )
     finally:
         generator.close()
 
