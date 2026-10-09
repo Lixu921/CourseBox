@@ -829,7 +829,6 @@ OPENAPI_PROPERTY_TITLES = {
     "id": "编号",
     "name": "名称",
     "college": "学院",
-    "semester": "学期",
     "version": "版本号",
     "tags": "标签",
     "file_count": "资料数量",

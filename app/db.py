@@ -50,7 +50,6 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 college TEXT,
-                semester TEXT,
                 version INTEGER NOT NULL DEFAULT 1,
                 tags TEXT
             );
@@ -165,6 +164,7 @@ def init_db(connection: sqlite3.Connection | None = None) -> None:
         # sha256 唯一索引由这个函数负责建：它的 WHERE 条件含 deleted_at，
         # 老库里的旧索引需要重建，不能交给上面的 IF NOT EXISTS 一句话带过。
         ensure_files_sha256_index(connection)
+        ensure_course_name_unique(connection)
         ensure_fts(connection)
         ensure_bootstrap_admin(connection)
         connection.commit()
@@ -332,6 +332,24 @@ def ensure_files_sha256_index(connection: sqlite3.Connection) -> None:
         # 重建不会因为数据冲突而失败。
         connection.execute(f"DROP INDEX {SHA256_INDEX_NAME}")
     connection.execute(SHA256_INDEX_SQL)
+
+
+COURSE_NAME_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_name_unique ON courses(name)"
+)
+
+
+def ensure_course_name_unique(connection: sqlite3.Connection) -> None:
+    """课程名唯一索引。老库里若已有重名，建索引会失败——此时跳过，改由应用层查重兜底。"""
+
+    try:
+        connection.execute(COURSE_NAME_INDEX_SQL)
+    except sqlite3.IntegrityError as error:
+        logger.warning(
+            "存在重名课程，跳过唯一索引：%s",
+            error,
+            extra={"event": "migration"},
+        )
 
 
 def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:

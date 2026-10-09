@@ -142,7 +142,7 @@ def view_share(token: str, db: sqlite3.Connection = Depends(get_db)) -> ShareVie
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="分享链接已过期")
 
     course_row = db.execute(
-        "SELECT id, name, college, semester, version, tags FROM courses WHERE id = ?",
+        "SELECT id, name, college, version, tags FROM courses WHERE id = ?",
         (row["course_id"],),
     ).fetchone()
     if course_row is None:

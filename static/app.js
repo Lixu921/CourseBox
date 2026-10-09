@@ -512,12 +512,6 @@ function courseCard(course, query) {
     college.append(highlight(course.college, query));
     card.append(college);
   }
-  if (course.semester) {
-    const semester = document.createElement("p");
-    semester.className = "course-meta";
-    semester.append(highlight(course.semester, query));
-    card.append(semester);
-  }
   if (course.tags && course.tags.length) {
     const tagRow = document.createElement("p");
     tagRow.className = "course-tags";
@@ -529,12 +523,12 @@ function courseCard(course, query) {
     });
     card.append(tagRow);
   }
-  // 课程是按 课程名 / 学院 / 学期 OR 匹配的，所以必须说清是哪个命中的：
+  // 课程是按 课程名 / 学院 / 标签 OR 匹配的，所以必须说清是哪个命中的：
   // 否则搜「计算机」时用户只看到课程名，完全不知道它为什么被搜出来。
   const labels = [];
   if (matchesQuery(course.name, query)) labels.push("课程名");
   if (matchesQuery(course.college, query)) labels.push("学院");
-  if (matchesQuery(course.semester, query)) labels.push("学期");
+  if (matchesQuery((course.tags || []).join(" "), query)) labels.push("标签");
   if (matchesQuery((course.tags || []).join(" "), query)) labels.push("标签");
   const hint = matchHint(labels);
   if (hint) card.append(hint);

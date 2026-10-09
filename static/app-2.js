@@ -265,7 +265,7 @@ async function removeCourse(course) {
 }
 
 function courseContextText(course) {
-  const context = [course.college, course.semester].filter(Boolean).join(" · ");
+  const context = [course.college].filter(Boolean).join(" · ");
   return `${context ? `${context} · ` : ""}${course.file_count} 份已通过资料`;
 }
 

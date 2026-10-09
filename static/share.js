@@ -72,7 +72,6 @@ async function loadShare() {
     shareCourseName.textContent = data.course.name;
     const parts = [];
     if (data.course.college) parts.push(data.course.college);
-    if (data.course.semester) parts.push(data.course.semester);
     if (data.note) parts.push(data.note);
     parts.push(`有效期至 ${formatDateTime(data.expires_at) || data.expires_at}`);
     shareMeta.textContent = parts.join(" · ");

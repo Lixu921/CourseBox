@@ -335,7 +335,6 @@ def search_response(row: sqlite3.Row, terms: list[str]) -> dict:
         "id": row["course_id"],
         "name": row["course_name"],
         "college": row["college"],
-        "semester": row["semester"],
     }
     result["matched_fields"] = matched_field_labels(row, terms)
     return result
@@ -536,7 +535,7 @@ def export_course_files(
         )
 
     course = db.execute(
-        "SELECT name, college, semester FROM courses WHERE id = ?", (course_id,)
+        "SELECT name, college FROM courses WHERE id = ?", (course_id,)
     ).fetchone()
     if user is not None:
         record_audit(
@@ -562,7 +561,6 @@ def export_course_files(
             "校验值(sha256)",
             "课程名",
             "学院",
-            "学期",
         ),
         (
             (
@@ -576,7 +574,6 @@ def export_course_files(
                 row["sha256"] or "",
                 course["name"],
                 course["college"] or "",
-                course["semester"] or "",
             )
             for row in rows
         ),
@@ -1113,7 +1110,7 @@ def list_my_files(
                f.download_count,
                (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = f.id)
                    AS comment_count,
-               c.name AS course_name, c.college, c.semester, f.filename
+               c.name AS course_name, c.college, f.filename
         FROM files AS f JOIN courses AS c ON c.id = f.course_id
         WHERE {where}
         ORDER BY f.id DESC LIMIT ? OFFSET ?
@@ -1190,7 +1187,7 @@ def search_files(
                        f.mime_type, f.sha256, f.status, f.version, f.download_count,
                        (SELECT COUNT(*) FROM comments AS cm WHERE cm.file_id = f.id)
                            AS comment_count,
-                       c.name AS course_name, c.college, c.semester, f.filename
+                       c.name AS course_name, c.college, f.filename
                 FROM files AS f JOIN courses AS c ON c.id = f.course_id
                 WHERE {visibility} AND ({clause})
                 ORDER BY {order} LIMIT ? OFFSET ?

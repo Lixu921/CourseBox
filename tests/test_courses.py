@@ -14,7 +14,7 @@ def test_create_and_list_courses(tmp_path, monkeypatch):
     login_admin(client)
     create_response = client.post(
         "/\u63a5\u53e3/\u8bfe\u7a0b",
-        json={"name": "Data Structures", "college": "Computer Science", "semester": "2026"},
+        json={"name": "Data Structures", "college": "Computer Science"},
     )
 
     assert create_response.status_code == 201
@@ -46,20 +46,18 @@ def test_text_fields_are_trimmed_and_have_length_limits(tmp_path, monkeypatch):
     login_admin(client)
     created = client.post(
         "/接口/课程",
-        json={"name": "  数据结构  ", "college": "  计算机学院  ", "semester": "  2026 春  "},
+        json={"name": "  数据结构  ", "college": "  计算机学院  "},
     )
     assert created.status_code == 201
     assert created.json()["name"] == "数据结构"
     assert created.json()["college"] == "计算机学院"
-    assert created.json()["semester"] == "2026 春"
 
     blank_optional = client.patch(
         f"/接口/课程/{created.json()['id']}",
-        json={"college": "   ", "semester": "   "},
+        json={"college": "   "},
     )
     assert blank_optional.status_code == 200
     assert blank_optional.json()["college"] is None
-    assert blank_optional.json()["semester"] is None
     assert client.patch(
         f"/接口/课程/{created.json()['id']}", json={"name": None}
     ).status_code == 422
@@ -89,7 +87,6 @@ def test_course_pagination_and_detail(tmp_path, monkeypatch):
                 "id": 1,
                 "name": "课程一",
                 "college": None,
-                "semester": None,
                 "version": 1,
                 "tags": [],
             }
@@ -130,11 +127,10 @@ def test_course_and_file_can_be_updated_and_deleted_with_disk_cleanup(tmp_path, 
 
     updated_course = client.patch(
         f"/接口/课程/{course['id']}",
-        json={"name": "新课程", "semester": "2026"},
+        json={"name": "新课程"},
     )
     assert updated_course.status_code == 200
     assert updated_course.json()["name"] == "新课程"
-    assert updated_course.json()["semester"] == "2026"
     updated_file = client.patch(
         f"/接口/资料/{file_id}", json={"title": "新标题"}
     )
@@ -276,20 +272,20 @@ def test_course_list_keyword_search(tmp_path, monkeypatch):
     login_admin(client)
     client.post(
         "/接口/课程",
-        json={"name": "数据结构", "college": "计算机学院", "semester": "2026 秋"},
+        json={"name": "数据结构", "college": "计算机学院"},
     )
     client.post(
         "/接口/课程",
-        json={"name": "高等数学", "college": "数学学院", "semester": "2026 秋"},
+        json={"name": "高等数学", "college": "数学学院"},
     )
     client.post("/接口/课程", json={"name": "线性代数"})
 
     assert client.get("/接口/课程").json()["total"] == 3
 
-    # 关键词分别命中课程名、学院、学期。
+    # 关键词分别命中课程名、学院。
     assert client.get("/接口/课程", params={"关键词": "高等"}).json()["total"] == 1
     assert client.get("/接口/课程", params={"关键词": "计算机"}).json()["total"] == 1
-    assert client.get("/接口/课程", params={"关键词": "2026 秋"}).json()["total"] == 2
+    assert client.get("/接口/课程", params={"关键词": "学院"}).json()["total"] == 2
     assert client.get("/接口/课程", params={"关键词": "不存在"}).json()["total"] == 0
 
     # 通配符要被转义，不能把 % 当成"匹配全部"。
@@ -298,7 +294,7 @@ def test_course_list_keyword_search(tmp_path, monkeypatch):
 
     # 关键词与分页同时生效。
     paged = client.get(
-        "/接口/课程", params={"关键词": "2026 秋", "page": 1, "page_size": 1}
+        "/接口/课程", params={"关键词": "学院", "page": 1, "page_size": 1}
     ).json()
     assert len(paged["items"]) == 1
     assert paged["total"] == 2
@@ -375,3 +371,24 @@ def test_course_tags(tmp_path, monkeypatch):
 
     cleared = client.patch(f"/接口/课程/{created['id']}", json={"tags": []})
     assert cleared.json()["tags"] == []
+
+
+def test_course_name_cannot_repeat(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+
+    assert client.post("/接口/课程", json={"name": "高等数学"}).status_code == 201
+    duplicate = client.post("/接口/课程", json={"name": "高等数学"})
+    assert duplicate.status_code == 409
+    assert "已存在" in duplicate.json()["error"]["message"]
+
+    other = client.post("/接口/课程", json={"name": "线性代数"}).json()
+    # 改名撞上已有课程也要被拒。
+    clash = client.patch(f"/接口/课程/{other['id']}", json={"name": "高等数学"})
+    assert clash.status_code == 409

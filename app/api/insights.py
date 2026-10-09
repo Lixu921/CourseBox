@@ -17,7 +17,7 @@ INSIGHT_COLUMNS = """
     f.id, f.course_id, f.title, f.original_name, f.size, f.upload_time,
     f.download_count, f.status,
     c.id AS c_id, c.name AS c_name, c.college AS c_college,
-    c.semester AS c_semester, c.version AS c_version, c.tags AS c_tags
+    c.version AS c_version, c.tags AS c_tags
 """
 INSIGHT_WHERE = "f.status = 'approved' AND f.deleted_at IS NULL"
 
@@ -36,7 +36,6 @@ def insight_response(row: sqlite3.Row) -> InsightFile:
             id=row["c_id"],
             name=row["c_name"],
             college=row["c_college"],
-            semester=row["c_semester"],
             version=row["c_version"],
             tags=row["c_tags"],
         ),

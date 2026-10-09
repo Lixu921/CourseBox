@@ -26,7 +26,7 @@ def test_export_course_files_csv(tmp_path, monkeypatch):
     login_admin(client)
     course = client.post(
         "/接口/课程",
-        json={"name": "数据结构", "college": "计算机学院", "semester": "2026 春"},
+        json={"name": "数据结构", "college": "计算机学院"},
     ).json()
     for index, (title, name) in enumerate((("绪论", "intro.pdf"), ("习题一", "hw1.pdf"))):
         assert client.post(

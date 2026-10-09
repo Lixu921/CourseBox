@@ -51,7 +51,6 @@ def parse_tags(value: object) -> list[str]:
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     college: str | None = Field(default=None, max_length=120)
-    semester: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = None
 
     @field_validator("tags", mode="before")
@@ -69,7 +68,7 @@ class CourseCreate(BaseModel):
             raise ValueError("课程名称不能为空")
         return value
 
-    @field_validator("college", "semester", mode="before")
+    @field_validator("college", mode="before")
     @classmethod
     def optional_text_is_normalized(cls, value: str | None) -> str | None:
         if value is None:
@@ -83,7 +82,6 @@ class CourseCreate(BaseModel):
 class CourseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     college: str | None = Field(default=None, max_length=120)
-    semester: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = None
     # 客户端看到并基于其编辑的版本号；不传则退化为「后写覆盖」。
     version: int | None = Field(default=None, ge=1)
@@ -105,7 +103,7 @@ class CourseUpdate(BaseModel):
             raise ValueError("课程名称不能为空")
         return value
 
-    @field_validator("college", "semester", mode="before")
+    @field_validator("college", mode="before")
     @classmethod
     def optional_text_is_normalized(cls, value: str | None) -> str | None:
         if value is None:
@@ -282,7 +280,6 @@ class Course(BaseModel):
     id: int
     name: str
     college: str | None = None
-    semester: str | None = None
     # 编辑乐观锁：客户端带着自己看到的版本号回传，服务端比对后决定是否放行。
     version: int = 1
     tags: list[str] = []

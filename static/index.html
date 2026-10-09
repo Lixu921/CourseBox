@@ -158,11 +158,27 @@
         </div>
         <div class="form-field">
           <label for="course-create-college">学院</label>
-          <input id="course-create-college" name="college" type="text" maxlength="120">
-        </div>
-        <div class="form-field">
-          <label for="course-create-semester">学期</label>
-          <input id="course-create-semester" name="semester" type="text" maxlength="80">
+          <input id="course-create-college" name="college" type="text" maxlength="120"
+                 list="college-options" placeholder="选择或输入学院" autocomplete="off">
+          <datalist id="college-options">
+            <option value="地球科学与技术学院"></option>
+            <option value="石油工程学院"></option>
+            <option value="化学化工学院"></option>
+            <option value="机电工程学院"></option>
+            <option value="储运与建筑工程学院"></option>
+            <option value="材料科学与工程学院"></option>
+            <option value="石大山能新能源学院"></option>
+            <option value="海洋与空间信息学院"></option>
+            <option value="控制科学与工程学院"></option>
+            <option value="青岛软件学院、计算机科学与技术学院"></option>
+            <option value="理学院"></option>
+            <option value="经济管理学院"></option>
+            <option value="外国语学院"></option>
+            <option value="文法学院"></option>
+            <option value="马克思主义学院"></option>
+            <option value="体育教学部"></option>
+            <option value="国际教育学院"></option>
+          </datalist>
         </div>
         <div class="form-field">
           <label for="course-create-tags">标签</label>
