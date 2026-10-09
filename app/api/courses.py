@@ -3,7 +3,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.auth import require_roles
-from app.api.common import escape_like, page_response
+from app.api.common import escape_like, page_response, subsequence_match
 from app.db import (
     discard_staged_files,
     get_db,
@@ -63,6 +63,24 @@ def list_courses(
         f"SELECT COUNT(*) FROM courses {where}",  # noqa: S608 - 条件由内部白名单拼接
         params,
     ).fetchone()[0]
+    if keyword and total == 0:
+        # 正常子串没命中时，退一步按「简称子序列」匹配课程名（高数 → 高等数学）。
+        if tag:
+            candidates = db.execute(
+                "SELECT id, name, college, version, tags FROM courses "
+                "WHERE (',' || COALESCE(tags, '') || ',') LIKE ? ESCAPE '\\' "
+                "ORDER BY id DESC",
+                (f"%,{escape_like(tag)},%",),
+            ).fetchall()
+        else:
+            candidates = db.execute(
+                "SELECT id, name, college, version, tags FROM courses ORDER BY id DESC"
+            ).fetchall()
+        matched = [row for row in candidates if subsequence_match(keyword, row["name"])]
+        start = (page - 1) * page_size
+        end = start + page_size
+        items = [row_to_course(row).model_dump() for row in matched[start:end]]
+        return CoursePage(**page_response(items, len(matched), page, page_size))
     offset = (page - 1) * page_size
     rows = db.execute(
         f"""

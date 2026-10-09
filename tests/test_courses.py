@@ -392,3 +392,28 @@ def test_course_name_cannot_repeat(tmp_path, monkeypatch):
     # 改名撞上已有课程也要被拒。
     clash = client.patch(f"/接口/课程/{other['id']}", json={"name": "高等数学"})
     assert clash.status_code == 409
+
+
+def test_course_search_by_abbreviation(tmp_path, monkeypatch):
+    client = create_client()
+    monkeypatch.setenv("COURSEBOX_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("COURSEBOX_UPLOAD_DIR", str(tmp_path / "uploads"))
+
+    from app.db import init_db
+
+    init_db()
+    login_admin(client)
+    client.post("/接口/课程", json={"name": "高等数学"})
+    client.post("/接口/课程", json={"name": "线性代数"})
+
+    # 简称按子序列命中：高数 → 高等数学。
+    hit = client.get("/接口/课程", params={"关键词": "高数"}).json()
+    assert hit["total"] == 1
+    assert hit["items"][0]["name"] == "高等数学"
+
+    # 正常子串搜索照旧。
+    assert client.get("/接口/课程", params={"关键词": "高等"}).json()["total"] == 1
+
+    # 顺序不对或缺少字则不命中。
+    assert client.get("/接口/课程", params={"关键词": "数高"}).json()["total"] == 0
+    assert client.get("/接口/课程", params={"关键词": "高代"}).json()["total"] == 0

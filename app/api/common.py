@@ -25,6 +25,19 @@ def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def subsequence_match(query: str, text: str) -> bool:
+    """查询里的字按顺序出现（不必连续）就算命中。
+
+    用来支持简称：`高数` 能命中 `高等数学`（高…数）。忽略查询里的空格。
+    """
+
+    needle = query.replace(" ", "").lower()
+    if not needle:
+        return False
+    iterator = iter(text.lower())
+    return all(char in iterator for char in needle)
+
+
 def parse_date(value: str | None, field: str) -> date | None:
     """把 YYYY-MM-DD 解析为日期，空值返回 None，非法值直接 422。"""
 
