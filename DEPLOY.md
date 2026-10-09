@@ -32,13 +32,20 @@ and file store for a real production deployment.
 ## Keep the free instance awake
 
 Render free web services spin down after ~15 minutes idle; the next request then
-waits ~50 seconds for a cold start. A scheduled GitHub Actions workflow
-(`.github/workflows/keepalive.yml`) pings `/api/health` every 10 minutes to
-reduce this. You can also point a free monitor (UptimeRobot, cron-job.org) at
-`https://<your-service>.onrender.com/api/health`.
+waits ~50 seconds for a cold start. Two ways to reduce it:
 
-Note: GitHub pauses scheduled workflows after ~60 days of repository
-inactivity, and cron runs can be delayed by a few minutes.
+1. **GitHub Actions (in this repo).** `.github/workflows/keepalive.yml` pings
+   `/api/health` every 5 minutes and retries while the instance cold-starts.
+   Caveats: GitHub cron can be delayed by minutes, and scheduled workflows are
+   paused after ~60 days of repository inactivity. Actions are free for public
+   repos but count against minutes for private ones.
+2. **An external uptime monitor (more reliable).** Create a free monitor on
+   UptimeRobot (or cron-job.org) that GETs
+   `https://<your-service>.onrender.com/api/health` every 5 minutes. This does
+   not depend on GitHub's scheduler.
+
+Keeping the instance awake only avoids cold starts; it does **not** prevent data
+loss on the ephemeral free disk (see below).
 
 ## Persist data (avoid losing uploads and SQLite)
 

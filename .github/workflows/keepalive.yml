@@ -1,27 +1,42 @@
 name: Keep-alive
 
 # Render 免费实例闲置约 15 分钟会休眠，下次访问要冷启动约 50 秒。
-# 这个工作流每 10 分钟访问一次健康接口，尽量让它保持唤醒。
+# 这里每 5 分钟访问一次健康接口把它唤醒；若实例正在冷启动，会在多次重试里把这次
+# 唤醒“跑完”。任何一次访问都会重置 Render 的闲置计时。
 #
 # 注意：
-# - GitHub 的计划任务可能有几分钟延迟，且仓库长期无活动（约 60 天）后会自动停用；
-# - 保持唤醒只能减少冷启动，**不能防止免费盘数据丢失**（见 DEPLOY.md）。
-# - 如果换了部署地址，改下面的 URL 或改用 UptimeRobot / cron-job.org 之类的免费监控。
+# - GitHub 的计划任务可能延迟几分钟，且仓库约 60 天无活动后会被自动停用；
+#   公开仓库的 Actions 免费，私有仓库按分钟计费（频繁调度会烧额度）。
+# - 想更稳，另配一个 UptimeRobot 监控（每 5 分钟访问同一地址，见 DEPLOY.md）。
+# - 保持唤醒不解决「免费盘数据易失」，持久化见 DEPLOY.md。
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: 访问健康接口
+      - name: 唤醒并确认
         run: |
-          # 冷启动可能要等一会儿，超时给到 90 秒；即使超时也不把任务判失败。
-          curl -fsS --max-time 90 https://coursebox.onrender.com/api/health \
-            || echo "唤醒请求未在 90 秒内成功（可能仍在冷启动，下一次会更快）"
+          url="https://coursebox.onrender.com/api/health"
+          for attempt in 1 2 3 4; do
+            if curl -fsS --max-time 90 -o /dev/null "$url"; then
+              echo "第 $attempt 次尝试成功，实例已唤醒。"
+              exit 0
+            fi
+            echo "第 $attempt 次未成功（可能仍在冷启动），20 秒后重试…"
+            sleep 20
+          done
+          # 保持唤醒失败不该把 Actions 历史刷成红色，记一笔即可。
+          echo "四次尝试均未成功；请到 Render 控制台确认服务状态。"
+          exit 0

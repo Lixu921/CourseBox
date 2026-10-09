@@ -9,7 +9,7 @@
 
 | 编号 | 主题 | 做法 |
 | --- | --- | --- |
-| P1 | 保持唤醒 | 新增 `.github/workflows/keepalive.yml`：每 10 分钟用 GitHub Actions 访问一次 `/api/health`，减少冷启动。文档给出 UptimeRobot / cron-job.org 的替代做法 |
+| P1 | 保持唤醒 | 新增 `.github/workflows/keepalive.yml`：每 5 分钟访问一次 `/api/health`，冷启动时自动重试直到唤醒。文档另给出 UptimeRobot / cron-job.org 的更可靠替代 |
 | P2 | 数据持久化 | **不写死磁盘**（免费实例加 disk 会导致部署失败），改为在 `render.yaml` 加注释说明、在 `DEPLOY.md` 写清步骤：升级付费实例 → 挂载 `/var/data` → 把 `COURSEBOX_DB`/`COURSEBOX_UPLOAD_DIR` 指过去；并给出「自建 VPS + docker-compose」这条更稳的路 |
 
 ## 为什么 P2 不直接改 render.yaml 生效
