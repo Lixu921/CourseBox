@@ -251,9 +251,6 @@ class Settings:
     account_rate_limit_per_minute: int
     allow_registration: bool
     register_role: str
-    # 应急管理员：两个都设置时，每次启动都会确保这个账号是「启用的管理员」并重置其密码。
-    recovery_admin_username: str | None
-    recovery_admin_password: str | None
 
     @property
     def is_production(self) -> bool:
@@ -272,18 +269,6 @@ def get_settings() -> Settings:
     environment = os.getenv("COURSEBOX_ENV", DEFAULT_ENV).strip().lower() or DEFAULT_ENV
     is_production = environment in PRODUCTION_ENVS
     max_file_size = _positive_int("COURSEBOX_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE)
-    recovery_username = (
-        os.getenv("COURSEBOX_RECOVERY_ADMIN_USERNAME") or ""
-    ).strip() or None
-    recovery_password_raw = (
-        os.getenv("COURSEBOX_RECOVERY_ADMIN_PASSWORD") or ""
-    ).strip()
-    # 太短的密码直接忽略，避免这个后门被配成弱口令。
-    recovery_password = (
-        recovery_password_raw
-        if len(recovery_password_raw) >= MIN_ADMIN_PASSWORD_LENGTH
-        else None
-    )
     return Settings(
         database_path=_path_from_env("COURSEBOX_DB", DEFAULT_DB_PATH),
         uploads_path=_path_from_env("COURSEBOX_UPLOAD_DIR", DEFAULT_UPLOADS_PATH),
@@ -348,6 +333,4 @@ def get_settings() -> Settings:
             "COURSEBOX_ALLOW_REGISTRATION", DEFAULT_ALLOW_REGISTRATION
         ),
         register_role=_register_role_from_env(),
-        recovery_admin_username=recovery_username if recovery_password else None,
-        recovery_admin_password=recovery_password,
     )

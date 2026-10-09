@@ -56,20 +56,6 @@ disk** (disks require a paid instance type) and point the app at it:
 For full control instead, run the project on your own small VPS with the bundled
 `docker-compose.yml` (named volumes already persist the database and uploads).
 
-## Recover the admin account
-
-If the bootstrap/admin password is lost (e.g. Render's generated
-`COURSEBOX_ADMIN_PASSWORD` cannot be found), set these two environment variables
-and redeploy:
-
-- `COURSEBOX_RECOVERY_ADMIN_USERNAME` (e.g. your own username)
-- `COURSEBOX_RECOVERY_ADMIN_PASSWORD` (at least 8 characters)
-
-On startup the app ensures that account exists, is an **enabled admin**, and
-resets its password. Remove both variables and redeploy once you are back in, so
-the recovery backdoor is not left enabled. Passwords shorter than 8 characters
-are ignored.
-
 ## Deploy with Docker
 
 ```powershell

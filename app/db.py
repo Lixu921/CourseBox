@@ -344,38 +344,6 @@ def ensure_bootstrap_admin(connection: sqlite3.Connection) -> None:
         (bootstrap_admin_username(), hash_password(bootstrap_admin_password())),
     )
 
-
-def ensure_recovery_admin(
-    connection: sqlite3.Connection, username: str, password: str
-) -> None:
-    """确保某个账号存在且是「启用的管理员」，并重置其密码。
-
-    用于找回管理员（例如托管平台生成的管理员密码找不到了）。只有配置了
-    COURSEBOX_RECOVERY_ADMIN_USERNAME / PASSWORD（密码足够长）时，启动维护才会调用。
-    """
-
-    from app.auth import hash_password
-
-    password_hash = hash_password(password)
-    row = connection.execute(
-        "SELECT id FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    if row is None:
-        connection.execute(
-            "INSERT INTO users (username, password_hash, role, is_active) "
-            "VALUES (?, ?, 'admin', 1)",
-            (username, password_hash),
-        )
-    else:
-        connection.execute(
-            "UPDATE users SET password_hash = ?, role = 'admin', is_active = 1 "
-            "WHERE id = ?",
-            (password_hash, row["id"]),
-        )
-        # 重置密码就作废该账号已有会话，和别处的重置策略一致。
-        connection.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
-    connection.commit()
-
 def record_audit(
     connection: sqlite3.Connection,
     actor_id: int | None,
